@@ -78,12 +78,28 @@ def prepare_reference_dataset(
     release=DEFAULT_RELEASE,
     project_root=PROJECT_ROOT,
     interactive=None,
+    protocol=None,
 ):
     """Acquire selected official inputs and regenerate independent canonical outputs.
 
     Raw files remain unchanged. Outputs preserve source order, with lower-priority
     leakage removals explicitly recorded. This never reads the legacy joint data.
     """
+    if track == "c":
+        from emotion_detection.datasets.reference_crosslingual import (
+            prepare_crosslingual_dataset,
+        )
+        from emotion_detection.datasets.sources_track_c import DEFAULT_C_PROTOCOL
+
+        return prepare_crosslingual_dataset(
+            language,
+            release=release,
+            project_root=project_root,
+            interactive=interactive,
+            protocol=protocol or DEFAULT_C_PROTOCOL,
+        )
+    if protocol is not None:
+        raise ValueError("--protocol is applicable to Track C only")
     sources = get_reference_sources(track, language, release)
     root = Path(project_root).resolve()
     raw = root / "data/raw/reference_baselines" / release
@@ -173,6 +189,7 @@ def load_reference_dataset(
     release=DEFAULT_RELEASE,
     project_root=PROJECT_ROOT,
     interactive=None,
+    protocol=None,
 ):
     """Compatibility API: acquire and prepare, as before.
 
@@ -185,6 +202,7 @@ def load_reference_dataset(
         release=release,
         project_root=project_root,
         interactive=interactive,
+        protocol=protocol,
     )
 
 
@@ -194,6 +212,7 @@ def load_prepared_reference_dataset(
     *,
     release=DEFAULT_RELEASE,
     project_root=PROJECT_ROOT,
+    protocol=None,
 ):
     """Read and validate saved data without acquisition, preparation, or writes.
 
@@ -201,6 +220,20 @@ def load_prepared_reference_dataset(
     row counts, targets, provenance columns, and separation of all partitions.
     Missing or stale artifacts are errors, never a reason to regenerate silently.
     """
+    if track == "c":
+        from emotion_detection.datasets.reference_crosslingual import (
+            load_prepared_crosslingual_dataset,
+        )
+        from emotion_detection.datasets.sources_track_c import DEFAULT_C_PROTOCOL
+
+        return load_prepared_crosslingual_dataset(
+            language,
+            release=release,
+            project_root=project_root,
+            protocol=protocol or DEFAULT_C_PROTOCOL,
+        )
+    if protocol is not None:
+        raise ValueError("--protocol is applicable to Track C only")
     sources = get_reference_sources(track, language, release)
     root = Path(project_root).resolve()
     output = root / "data/processed/reference_baselines" / f"track_{track}" / language

@@ -372,10 +372,14 @@ _TRACK_B_LANGUAGES = {
 
 
 def available_reference_languages(track="a", release=DEFAULT_RELEASE):
-    """List registered languages without file I/O, downloads or preparation."""
+    """List registered languages without I/O; C lists targets, not protocol readiness."""
+    if track == "c":
+        from emotion_detection.datasets.sources_track_c import available_track_c_targets
+
+        return available_track_c_targets(release)
     if track not in {"a", "b"}:
         raise ValueError(
-            "Reference data preparation implements Tracks A and B; Track C is not implemented"
+            f"Unsupported reference track: {track}"
         )
     if release != DEFAULT_RELEASE:
         raise ValueError(f"Unsupported release: {release}")
@@ -384,6 +388,11 @@ def available_reference_languages(track="a", release=DEFAULT_RELEASE):
 
 
 def get_reference_sources(track="a", language="eng", release=DEFAULT_RELEASE):
+    """Pinned inputs: A/B triplets or C target dev/test (not source selections)."""
+    if track == "c":
+        from emotion_detection.datasets.sources_track_c import get_track_c_targets
+
+        return get_track_c_targets(language, release)
     languages = available_reference_languages(track, release)
     if track == "b" and language == "ron":
         raise ValueError(

@@ -19,6 +19,7 @@ def main(argv=None):
     parser.add_argument("--track", default="a")
     parser.add_argument("--language", default="eng")
     parser.add_argument("--release", default=DEFAULT_RELEASE)
+    parser.add_argument("--protocol", help="Track C source-selection protocol")
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument(
@@ -37,6 +38,7 @@ def main(argv=None):
             release=args.release,
             project_root=args.project_root,
             interactive=False if args.non_interactive else None,
+            **({"protocol": args.protocol} if args.protocol is not None else {}),
         )
     except (AcquisitionError, OSError, ValueError, pyarrow.ArrowException) as error:
         print(f"[ERROR] {error}", file=sys.stderr)
@@ -47,7 +49,12 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 130
-    for split in ("train", "dev", "test"):
+    roles = (
+        ("train", "source_dev", "target_dev", "test")
+        if args.track == "c"
+        else ("train", "dev", "test")
+    )
+    for split in roles:
         counts = data.metadata["split_counts"][split]
         print(
             f"{split}: {counts['input_rows']} source rows -> {counts['output_rows']} prepared rows"

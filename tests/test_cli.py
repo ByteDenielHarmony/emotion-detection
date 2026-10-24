@@ -173,13 +173,13 @@ def test_language_discovery_does_not_load_or_prepare_data(
     assert not list(tmp_path.iterdir())
 
 
-@pytest.mark.parametrize("track", ["c"])
+@pytest.mark.parametrize("track", ["unknown"])
 def test_language_discovery_rejects_unimplemented_tracks(track, tmp_path, capsys):
     assert (
         main(["data", "languages", "--track", track, "--project-root", str(tmp_path)])
         == 2
     )
-    assert "not implemented" in capsys.readouterr().err
+    assert "Unsupported reference track" in capsys.readouterr().err
     assert not list(tmp_path.iterdir())
 
 
@@ -529,13 +529,13 @@ def test_prepare_data_training_flag_orders_stages(local_reference, monkeypatch):
     assert calls == ["prepare", "load", "fit"]
 
 
-@pytest.mark.parametrize("track", ["c"])
+@pytest.mark.parametrize("track", ["unknown"])
 def test_unimplemented_tracks_fail_before_creating_files(tmp_path, track, capsys):
     assert (
         main(["data", "prepare", "--track", track, "--project-root", str(tmp_path)])
         == 2
     )
-    assert "not implemented" in capsys.readouterr().err
+    assert "Unsupported reference track" in capsys.readouterr().err
     assert not list(tmp_path.iterdir())
 
 

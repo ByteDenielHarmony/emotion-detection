@@ -51,7 +51,7 @@ def _reference_selection(parser, *, training=False):
         default="a",
         help="Reference track (training: a only)"
         if training
-        else "Reference track (a or b)",
+        else "Reference track (a, b or c)",
     )
     parser.add_argument(
         "--language",
@@ -62,6 +62,11 @@ def _reference_selection(parser, *, training=False):
         "--release",
         help="Pinned dataset release (default: registered official release)",
     )
+    if not training:
+        parser.add_argument(
+            "--protocol",
+            help="Track C source-selection protocol (default: task-paper-family-v1)",
+        )
 
 
 def build_parser():
@@ -94,7 +99,11 @@ def build_parser():
         "languages", help="List registered reference languages without downloading data"
     )
     _common_options(languages)
-    languages.add_argument("--track", default="a", help="Reference track (a or b)")
+    languages.add_argument(
+        "--track",
+        default="a",
+        help="Reference track (a, b or c; C lists targets, sun needs another source protocol)",
+    )
     languages.add_argument("--release", help="Registered pinned dataset release")
     languages.set_defaults(handler=_list_languages)
     prepare = data_commands.add_parser(
@@ -105,13 +114,17 @@ def build_parser():
         "--dataset", choices=("reference", "joint"), default="reference"
     )
     prepare.add_argument(
-        "--track", help="Reference track (a or b); not applicable to joint data"
+        "--track", help="Reference track (a, b or c); not applicable to joint data"
     )
     prepare.add_argument(
         "--language", help="Reference language (default eng); joint data is English"
     )
     prepare.add_argument(
         "--release", help="Pinned reference release; not applicable to joint data"
+    )
+    prepare.add_argument(
+        "--protocol",
+        help="Track C source-selection protocol (default: task-paper-family-v1)",
     )
     prepare.add_argument(
         "--non-interactive",
@@ -235,7 +248,12 @@ def build_parser():
 
 
 def _print_dataset(data):
-    for split in ("train", "dev", "test"):
+    roles = (
+        ("train", "source_dev", "target_dev", "test")
+        if data.metadata["track"] == "c"
+        else ("train", "dev", "test")
+    )
+    for split in roles:
         counts = data.metadata["split_counts"][split]
         print(
             f"{split}: {counts['input_rows']} source rows -> {len(getattr(data, split))} prepared rows"
@@ -243,6 +261,10 @@ def _print_dataset(data):
     print(f"Labels: {', '.join(data.label_names)}")
     print(f"Release: {data.metadata['release']}")
     print(f"Preparation variant: {data.metadata['preparation_variant']}")
+    if data.metadata["track"] == "c":
+        print(f"Protocol: {data.metadata['protocol']}")
+        print(f"Source languages: {', '.join(data.metadata['source_languages'])}")
+        print("Unknown labels retain nullable values and known_<emotion> masks")
 
 
 def _doctor(args):
@@ -269,11 +291,12 @@ def _prepare_data(args):
     if args.dataset == "joint":
         if (
             args.track is not None
+            or args.protocol is not None
             or args.release is not None
             or args.language not in (None, "eng")
         ):
             raise ValueError(
-                "Joint preparation is English A+B; --track and --release are reference-only"
+                "Joint preparation is English A+B; --track, --release and --protocol are reference-only"
             )
         from emotion_detection.datasets.prepare import main as prepare_joint
 
@@ -300,6 +323,7 @@ def _prepare_data(args):
             release=args.release or DEFAULT_RELEASE,
             project_root=root,
             interactive=False if args.non_interactive else None,
+            **({"protocol": args.protocol} if args.protocol is not None else {}),
         )
     except AcquisitionError as error:
         raise RuntimeError(str(error)) from error
@@ -316,10 +340,13 @@ def _check_data(args):
         language=args.language,
         release=args.release or DEFAULT_RELEASE,
         project_root=args.project_root,
+        **({"protocol": args.protocol} if args.protocol is not None else {}),
     )
     _print_dataset(data)
     print(
-        "Ready: source manifest, fingerprints, schemas, and split separation verified"
+        "Ready: source manifest, fingerprints, label masks, and source/target separation verified"
+        if args.track == "c"
+        else "Ready: source manifest, fingerprints, schemas, and split separation verified"
     )
     return 0
 

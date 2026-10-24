@@ -291,8 +291,8 @@ def test_cli_lists_languages_without_loading_data(monkeypatch, tmp_path, capsys)
 
 
 def test_cli_does_not_advertise_unimplemented_tracks(capsys):
-    assert main(["--track", "c", "--list-languages"]) == 2
-    assert "not implemented" in capsys.readouterr().err
+    assert main(["--track", "unknown", "--list-languages"]) == 2
+    assert "Unsupported reference track" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("language", available_reference_languages())
