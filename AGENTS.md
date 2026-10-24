@@ -7,13 +7,16 @@
   predicts five binary presence labels; Track B predicts five intensities, 0–3.
 - Prioritize necessary Stage 1 work: data preparation, analysis, evaluation,
   the traditional baseline, and reproducibility. Avoid unrequested scope growth.
-- A separate planned workstream provides one paper-referenced baseline modeling
-  approach for each of Tracks A, B, and C, including non-English settings.
+- Another project goal is to reimplement the original task paper's RoBERTa
+  baselines for Tracks A, B, and C, including multilingual and cross-lingual
+  settings. Keep these reference baselines separate from the main experiments
+  and document checkpoint choices and deviations from the published setup.
   This does not require a single shared checkpoint across languages or exhaustive
   replication of every language/configuration combination or published score.
-- Dataset preparation and synthetic tests exist. Most other packages are
-  scaffolding; reference baselines are not yet implemented. Inspect the current
-  code and distinguish planned, implemented, and verified functionality.
+- Dataset preparation, a modular Track A transformer reference baseline, and
+  synthetic tests exist. Reference Tracks B and C are not yet implemented.
+  Inspect current code and distinguish implemented, tested, and trained models;
+  a passing tiny-model test is not evidence of a pretrained-model benchmark run.
 
 ## Environment and dependencies
 
@@ -48,9 +51,12 @@
   existing scikit-learn components, and small interfaces over large hierarchies.
 - Use Python modules and CLI commands, not notebooks. Do not introduce an
   experiment configuration framework or extra infrastructure without a request.
-- When reference-baseline implementation begins, use a distinct namespace such
-  as `reference_baselines/`. Keep its data and output subdirectories separate
-  from main experiments; do not restructure the project preemptively.
+- Reference baselines live under `src/emotion_detection/reference_baselines/`.
+  Reuse checkpoint/tokenizer utilities and in-memory adapters across tracks,
+  while keeping objectives and experiment orchestration track-specific.
+- Model APIs receive already-loaded data. Do not add persistent data loading,
+  downloading, or preprocessing to the model code; another team member owns that
+  integration. Never alter the existing preparation pipeline incidentally.
 
 ## Data integrity and main-experiment evaluation
 
@@ -71,6 +77,21 @@
 
 ## Reference baselines
 
+- The Track A default is `FacebookAI/xlm-roberta-large`, with a pinned Hub
+  revision. Checkpoint name and revision are configurable; switching to base or
+  another RoBERTa-family checkpoint must not require rewriting the model.
+- Match official-format in-memory frames: id, text, and named emotion columns.
+  Preserve prediction IDs and row order. Missing emotion annotations are not
+  negative labels; select the correct per-language schema explicitly.
+- Use PyTorch and Transformers. Keep training reproducible, validate on development
+  data, and select the best validation macro-F1 checkpoint, never a test checkpoint.
+- Save self-contained model weights, tokenizer, label mapping, threshold, and
+  metadata under `output/runs/<run-id>/checkpoint/`. Keep metrics and run metadata
+  alongside it. Never overwrite an existing run. Intermediate Trainer checkpoints
+  under the run's `training/` directory also include resumable training state.
+- Memory-conscious defaults use 256 tokens, microbatch 2, accumulation 4,
+  gradient checkpointing, and automatic CUDA BF16/FP16 where supported. These
+  settings are not a guarantee of fitting every 16 GB GPU; verify on real hardware.
 - Ground each track's baseline in the original task paper and relevant official
   implementation. Cite the source and record upstream revisions when used.
 - Document architecture, training objective, selected languages, official splits,
