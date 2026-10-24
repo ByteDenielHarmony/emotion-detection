@@ -1,4 +1,4 @@
-"""Prepare paired English BRIGHTER annotations without changing raw files.
+"""Acquire pinned English BRIGHTER inputs and prepare paired annotations.
 
 Run from the repository root:
     uv run python src/emotion_detection/datasets/prepare.py
@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import platform
+import ssl
+import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import pyarrow
+import pyarrow.parquet as pq
 
 EMOTIONS = ("anger", "fear", "joy", "sadness", "surprise")
 SPLITS = ("train", "dev", "test")
@@ -27,6 +37,239 @@ SOURCES = {
         "revision": "08a5d61d3fc33036f97c8c76a61ff8d6f02f5157",
     },
 }
+
+INPUT_SHA256 = {
+    ("a", "train"): "b6d668f4bc0081c22e5b4be0679498709676acbf6288a2d81037ab01ac1e28f8",
+    ("a", "dev"): "82e6a08eebef0c1cf2b6fc30497b746b38566686e1468e1ff03c052c52c037ca",
+    ("a", "test"): "d2ffa29d9f55227c4630a6287f1ac76325047abf2c21d7431e04190cc22c3548",
+    ("b", "train"): "7764415133c7ed8edf1ec322af26e0e23849f5ff49ac4b834a4fcf881dfcf723",
+    ("b", "dev"): "7b974a684fdb382cdd3f40ca86ea3ab1a36c63850e5ae0a81562e141070ecdd5",
+    ("b", "test"): "c7becf513082560b6bb4f881fa7242e619ffc37fc6b3b01c40141b57c435016a",
+}
+
+
+@dataclass(frozen=True)
+class SourceFile:
+    track: str
+    split: str
+    sha256: str
+
+    @property
+    def label(self) -> str:
+        return f"Track {self.track.upper()} / {self.split}"
+
+    @property
+    def relative_path(self) -> Path:
+        return Path(f"track_{self.track}/eng/{self.split}-00000-of-00001.parquet")
+
+    @property
+    def url(self) -> str:
+        source = SOURCES[self.track]
+        return (
+            f"https://huggingface.co/datasets/{source['dataset']}/resolve/"
+            f"{source['revision']}/eng/{self.relative_path.name}"
+        )
+
+
+DATASET_FILES = tuple(
+    SourceFile(track, split, INPUT_SHA256[track, split])
+    for track in ("a", "b")
+    for split in SPLITS
+)
+
+
+class DatasetAcquisitionError(Exception):
+    """An expected acquisition problem that should not produce a traceback."""
+
+
+class DatasetFileError(DatasetAcquisitionError):
+    """An existing or downloaded file does not meet the pinned input contract."""
+
+
+def verify_source_file(path: Path, source: SourceFile) -> None:
+    """Verify actual content, including manually supplied files, without a network."""
+    if not path.is_file():
+        raise DatasetFileError(
+            f"Required file is missing or is not a regular file: {path}"
+        )
+    try:
+        with path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError as error:
+        raise DatasetFileError(f"Cannot read {path}: {error}") from error
+    if actual != source.sha256:
+        raise DatasetFileError(
+            f"Checksum mismatch for {source.label}. "
+            f"Expected SHA-256 {source.sha256}; got {actual}."
+        )
+    try:
+        with pq.ParquetFile(path) as parquet:
+            required = {"id", "text", *EMOTIONS}
+            missing = required - set(parquet.schema_arrow.names)
+            if missing:
+                raise DatasetFileError(f"Missing required columns: {sorted(missing)}")
+            parquet.read(columns=["id", "text", *EMOTIONS])
+    except (OSError, ValueError, pyarrow.ArrowException) as error:
+        raise DatasetFileError(
+            f"Cannot read Parquet data at {path}: {error}"
+        ) from error
+
+
+def download_source_file(
+    raw_dir: Path,
+    source: SourceFile,
+    *,
+    attempts: int = 3,
+    timeout: float = 30,
+) -> None:
+    """Publish only verified files; never overwrite an existing destination."""
+    destination = raw_dir / source.relative_path
+    if destination.exists() or destination.is_symlink():
+        verify_source_file(destination, source)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    last_reason = "Download failed"
+    for attempt in range(1, attempts + 1):
+        temporary = None
+        retryable = True
+        print(
+            f"[INFO] Downloading {source.label} (attempt {attempt}/{attempts})",
+            flush=True,
+        )
+        try:
+            request = Request(
+                source.url, headers={"User-Agent": "emotion-detection/0.1.0"}
+            )
+            with (
+                urlopen(request, timeout=timeout) as response,
+                tempfile.NamedTemporaryFile(
+                    dir=destination.parent,
+                    prefix=f".{destination.name}.",
+                    suffix=".part",
+                    delete=False,
+                ) as stream,
+            ):
+                temporary = Path(stream.name)
+                while chunk := response.read(64 * 1024):
+                    stream.write(chunk)
+            verify_source_file(temporary, source)
+            try:
+                # Same-directory hard linking publishes atomically and, unlike
+                # rename/replace, cannot overwrite a concurrently supplied file.
+                os.link(temporary, destination)
+            except FileExistsError:
+                verify_source_file(destination, source)
+            print(f"[OK] Downloaded and verified {source.label}", flush=True)
+            return
+        except HTTPError as error:
+            retryable = error.code in (408, 429) or 500 <= error.code < 600
+            descriptions = {
+                401: "authentication required",
+                403: "access denied",
+                404: "required file or revision not found",
+                410: "source is no longer available",
+            }
+            last_reason = (
+                f"HTTP {error.code}: {descriptions.get(error.code, error.reason)}"
+            )
+            error.close()
+        except URLError as error:
+            last_reason = f"Network error: {error.reason}"
+        except (TimeoutError, ConnectionError, HTTPException, ssl.SSLError) as error:
+            last_reason = f"Connection interrupted or timed out: {error}"
+        except DatasetFileError as error:
+            last_reason = str(error)
+        except OSError as error:
+            raise DatasetAcquisitionError(
+                f"Cannot save {source.label} at {destination}: {error}"
+            ) from error
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        if not retryable or attempt == attempts:
+            break
+        print(f"[WARNING] {source.label}: {last_reason}. Retrying...", file=sys.stderr)
+        time.sleep(attempt)
+    raise DatasetAcquisitionError(
+        f"Unable to download {source.label}. Reason: {last_reason}"
+    )
+
+
+def validate_input_layout(raw_dir: Path) -> None:
+    """Do not feed unverified additional shards into the existing glob-based loader."""
+    expected = {source.relative_path for source in DATASET_FILES}
+    for track in ("a", "b"):
+        for split in SPLITS:
+            for path in (raw_dir / f"track_{track}/eng").glob(f"{split}-*.parquet"):
+                if path.relative_to(raw_dir) not in expected:
+                    raise DatasetAcquisitionError(
+                        f"Unexpected input shard: {path}. Move it aside before continuing; "
+                        "the pinned English datasets require exactly the six expected filenames."
+                    )
+
+
+def ensure_raw_data(raw_dir: Path, *, interactive: bool | None = None) -> None:
+    """Acquire missing inputs, then offer manual recovery without losing progress."""
+    raw_dir = raw_dir.resolve()
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    validate_input_layout(raw_dir)
+    pending = []
+    for source in DATASET_FILES:
+        path = raw_dir / source.relative_path
+        try:
+            if path.exists() or path.is_symlink():
+                verify_source_file(path, source)
+                print(f"[OK] Using verified local file: {source.label}", flush=True)
+            else:
+                download_source_file(raw_dir, source)
+        except DatasetAcquisitionError as error:
+            pending.append((source, str(error)))
+
+    while pending:
+        for source, reason in pending:
+            path = raw_dir / source.relative_path
+            metadata = SOURCES[source.track]
+            print(
+                f"\n[ERROR] {source.label}: {reason}\n"
+                f"Dataset: {metadata['dataset']}\n"
+                f"Required revision: {metadata['revision']}\n"
+                f"Source: {source.url}\n"
+                f"Required SHA-256: {source.sha256}\n"
+                f"Find the required file manually and place it at:\n{path}\n"
+                "Existing files have not been overwritten. If an existing file is invalid, "
+                "move it aside before supplying the correct file.",
+                file=sys.stderr,
+            )
+        if not interactive:
+            raise DatasetAcquisitionError(
+                "Input files are not ready and interactive input is unavailable. "
+                "Place the files at the paths above and rerun the same command to resume."
+            )
+        try:
+            answer = input(
+                "\nPlace the files, then press Enter to check again; "
+                "enter q to exit (rerun the command later to resume): "
+            )
+        except EOFError:
+            answer = "q"
+        if answer.strip().lower() in {"q", "quit", "exit"}:
+            raise DatasetAcquisitionError(
+                "Stopped without preparing data. Existing files were kept. "
+                "Rerun the same command to resume."
+            )
+        remaining = []
+        for source, _ in pending:
+            try:
+                verify_source_file(raw_dir / source.relative_path, source)
+                print(
+                    f"[OK] Verified manually supplied file: {source.label}", flush=True
+                )
+            except DatasetFileError as error:
+                remaining.append((source, str(error)))
+        pending = remaining
+    # Manual restoration may have introduced additional files after preflight.
+    validate_input_layout(raw_dir)
 
 
 def audit(frame: pd.DataFrame) -> dict:
@@ -225,8 +468,8 @@ def write_diagnostic_csv(records, columns, path: Path) -> None:
     frame.to_csv(path, index=False, encoding="utf-8", lineterminator="\n")
 
 
-def prepare(raw_dir: Path, output_dir: Path, analysis_dir: Path) -> dict:
-    """Audit, clean and merge six input files; write deterministic outputs."""
+def validate_directories(raw_dir: Path, output_dir: Path, analysis_dir: Path) -> None:
+    """Reject unsafe paths before downloading or writing any data."""
     resolved = [p.resolve() for p in (raw_dir, output_dir, analysis_dir)]
     for i, left in enumerate(resolved):
         for right in resolved[i + 1 :]:
@@ -235,6 +478,10 @@ def prepare(raw_dir: Path, output_dir: Path, analysis_dir: Path) -> dict:
                     "Raw, processed and analysis directories must not overlap"
                 )
 
+
+def prepare(raw_dir: Path, output_dir: Path, analysis_dir: Path) -> dict:
+    """Audit, clean and merge local input files; write deterministic outputs."""
+    validate_directories(raw_dir, output_dir, analysis_dir)
     summary = {
         "schema_version": 1,
         "environment": {
@@ -379,7 +626,7 @@ def prepare(raw_dir: Path, output_dir: Path, analysis_dir: Path) -> dict:
     return summary
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", type=Path, default=REPOSITORY_ROOT / "data/raw")
     parser.add_argument(
@@ -390,8 +637,33 @@ def main() -> None:
         type=Path,
         default=REPOSITORY_ROOT / "output/analysis/data_preparation",
     )
-    args = parser.parse_args()
-    summary = prepare(args.raw_dir, args.output_dir, args.analysis_dir)
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Never prompt for manual recovery; exit with an error if inputs are unavailable.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        validate_directories(args.raw_dir, args.output_dir, args.analysis_dir)
+        ensure_raw_data(
+            args.raw_dir,
+            interactive=False if args.non_interactive else None,
+        )
+        summary = prepare(args.raw_dir, args.output_dir, args.analysis_dir)
+    except (
+        DatasetAcquisitionError,
+        OSError,
+        ValueError,
+        pyarrow.ArrowException,
+    ) as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print(
+            "\n[ERROR] Interrupted. Existing raw files were kept; rerun the same command to resume.",
+            file=sys.stderr,
+        )
+        return 130
     for split in SPLITS:
         stats = summary["splits"][split]
         print(
@@ -399,7 +671,8 @@ def main() -> None:
             f"({stats['merged_before_overlap_removal']} paired before overlap removal)"
         )
     print(f"Audit and diagnostics: {args.analysis_dir}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
