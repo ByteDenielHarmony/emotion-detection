@@ -12,6 +12,7 @@ from emotion_detection.datasets import (
 from emotion_detection.datasets.acquisition import AcquisitionError
 from emotion_detection.datasets.sources import DEFAULT_RELEASE, get_reference_sources
 from emotion_detection.reference_baselines import TrackAClassifier
+from emotion_detection.reference_baselines.training import validate_training_control
 from emotion_detection.reference_baselines.transformer import (
     DEFAULT_MODEL_NAME,
     resolve_device,
@@ -36,6 +37,9 @@ class ReferenceTrainingOptions:
     gradient_accumulation_steps: int = 4
     gradient_checkpointing: bool = True
     mixed_precision: str = "auto"
+    monitor: str = "macro_f1"
+    early_stopping_patience: int | None = None
+    early_stopping_min_delta: float = 0.0
     max_length: int = 256
     seed: int = 42
     threshold: float = 0.5
@@ -48,6 +52,11 @@ class ReferenceTrainingOptions:
 def train_reference(options: ReferenceTrainingOptions) -> Path:
     """Train A using prepared train/dev data; never score or train on test data."""
     sources = get_reference_sources(options.track, options.language, options.release)
+    validate_training_control(
+        options.monitor,
+        options.early_stopping_patience,
+        options.early_stopping_min_delta,
+    )
     root = Path(options.project_root).resolve()
     for name in ("epochs", "learning_rate"):
         value = getattr(options, name)
@@ -110,6 +119,9 @@ def train_reference(options: ReferenceTrainingOptions) -> Path:
         gradient_accumulation_steps=options.gradient_accumulation_steps,
         gradient_checkpointing=options.gradient_checkpointing,
         mixed_precision=options.mixed_precision,
+        monitor=options.monitor,
+        early_stopping_patience=options.early_stopping_patience,
+        early_stopping_min_delta=options.early_stopping_min_delta,
         data_metadata=data.metadata,
     )
     return model.run_dir

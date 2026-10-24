@@ -30,3 +30,33 @@ def multilabel_metrics(y_true, y_pred, label_names):
         scores.append(f1)
     metrics["macro_f1"] = float(np.mean(scores))
     return metrics
+
+
+def multilabel_diagnostics(y_true, y_pred, label_names):
+    """Scalar metrics and binary confusion matrices, including absent classes.
+
+    Matrix rows are actual [absent, present]; columns are predicted
+    [absent, present], i.e. [[TN, FP], [FN, TP]].
+    """
+    metrics = multilabel_metrics(y_true, y_pred, label_names)
+    truth, prediction = np.asarray(y_true, dtype=bool), np.asarray(y_pred, dtype=bool)
+    tp = (truth & prediction).sum(axis=0)
+    fp = (~truth & prediction).sum(axis=0)
+    fn = (truth & ~prediction).sum(axis=0)
+    tn = (~truth & ~prediction).sum(axis=0)
+    total_tp, total_fp, total_fn = int(tp.sum()), int(fp.sum()), int(fn.sum())
+    denominator = 2 * total_tp + total_fp + total_fn
+    metrics["micro_f1"] = 2 * total_tp / denominator if denominator else 0.0
+    return {
+        "metrics": metrics,
+        "label_names": list(label_names),
+        "support": {name: int(tp[i] + fn[i]) for i, name in enumerate(label_names)},
+        "confusion_matrices": {
+            name: [[int(tn[i]), int(fp[i])], [int(fn[i]), int(tp[i])]]
+            for i, name in enumerate(label_names)
+        },
+        "matrix_axes": {
+            "rows": ["actual_absent", "actual_present"],
+            "columns": ["predicted_absent", "predicted_present"],
+        },
+    }

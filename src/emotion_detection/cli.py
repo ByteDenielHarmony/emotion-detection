@@ -38,6 +38,13 @@ def _positive_float(value):
     return number
 
 
+def _nonnegative_float(value):
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be finite and nonnegative")
+    return number
+
+
 def _reference_selection(parser):
     parser.add_argument(
         "--track", default="a", help="Reference track (currently a only)"
@@ -146,6 +153,23 @@ def build_parser():
         type=_positive_float,
         default=1e-5,
         help="Learning rate (default: %(default)s)",
+    )
+    reference.add_argument(
+        "--monitor",
+        choices=("macro_f1", "loss"),
+        default="macro_f1",
+        help="Development metric for checkpoint selection and early stopping (default: %(default)s)",
+    )
+    reference.add_argument(
+        "--early-stopping-patience",
+        type=_positive_int,
+        help="Enable early stopping after this many non-improving epochs (disabled by default)",
+    )
+    reference.add_argument(
+        "--early-stopping-min-delta",
+        type=_nonnegative_float,
+        default=0.0,
+        help="Minimum metric improvement to reset patience; requires --early-stopping-patience (default: %(default)s)",
     )
     reference.add_argument(
         "--batch-size",
@@ -314,6 +338,9 @@ def _train_reference(args):
         "device",
         "epochs",
         "learning_rate",
+        "monitor",
+        "early_stopping_patience",
+        "early_stopping_min_delta",
         "batch_size",
         "gradient_accumulation_steps",
         "gradient_checkpointing",

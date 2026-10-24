@@ -179,6 +179,51 @@ overwritten. Checkpoint selection uses development data only. **Training does no
 evaluate the final test set.** Evaluation and prediction remain available through
 the Python model API; their CLI commands are not implemented yet.
 
+### Longer training with early stopping
+
+The default remains two epochs with no early stopping. To set a larger epoch
+limit and stop when development loss stops improving:
+
+```bash
+uv run --locked emotion train reference --track a --language eng --device cuda \
+  --epochs 20 --monitor loss --early-stopping-patience 3 \
+  --early-stopping-min-delta 0.001
+```
+
+This example uses bash line continuations; the same options can be entered on one
+line in other shells. `--monitor macro_f1` (the default) selects higher scores;
+`--monitor loss` selects lower loss. Checkpoint selection and early stopping use
+the same metric. Supplying `--early-stopping-patience` enables stopping after that
+many consecutive evaluation epochs without sufficient improvement.
+`--early-stopping-min-delta` is the absolute improvement required to reset patience
+(default zero), and requires patience to be enabled. It does not change checkpoint
+ranking: even a smaller improvement can become the best saved checkpoint.
+
+Every epoch prints development loss, macro/micro-F1, per-emotion precision,
+recall, F1 and support, followed by one binary confusion matrix per emotion.
+Matrices use actual absent/present as rows and predicted absent/present as columns:
+`[[TN, FP], [FN, TP]]`. Reports reuse validation predictions, without another
+inference pass or any test evaluation. A final report is labeled separately as
+the selected checkpoint's development evaluation.
+
+The trainer saves at every epoch and rotates old checkpoints, retaining at most
+two intermediate checkpoints while protecting the best and latest. An extra
+recent checkpoint may remain when best and latest coincide. Rotation only affects
+the new run's `training/` directory, never other runs or existing final checkpoints.
+Large optimizer-state snapshots take substantial disk space; this is not an
+unlimited checkpoint archive. The selected best model is still exported to
+`checkpoint/` when training finishes.
+
+`epoch_history.jsonl` retains metrics and confusion matrices for every completed
+epoch, even after its weights are removed. `validation_report.json` contains the
+selected model's report. Run metadata records the monitoring settings, completed
+epochs, stopping reason, selected epoch, and selected model's loss/F1. The legacy
+`best_macro_f1` field records the highest observed epoch F1; when monitoring loss,
+this need not equal `selected_checkpoint_macro_f1`.
+
+Longer/early-stopped runs are separate experiments, not exact reproductions of
+the original fixed two-epoch recipe. The previous runs are not modified.
+
 ## Track A reference baseline
 
 The model API accepts **already-loaded pandas DataFrames** using the official
@@ -236,10 +281,12 @@ Each fit creates a unique run directory, or accepts a nonexisting `run_id`:
 
 ```text
 output/runs/<run-id>/
-├── checkpoint/     Best validation model, tokenizer, label mapping, and metadata
-├── training/       Intermediate Trainer checkpoints, including optimizer state
-├── metadata.json   Model revision, settings, versions, and input fingerprints
-└── metrics.json    Best model's development-set evaluation
+├── checkpoint/             Best validation model, tokenizer, labels, and metadata
+├── training/               Up to two rotating Trainer checkpoints with optimizer state
+├── epoch_history.jsonl     All epoch development metrics and confusion matrices
+├── validation_report.json  Selected checkpoint's development report
+├── metadata.json           Settings, versions, provenance, and stopping summary
+└── metrics.json            Training statistics and selected model's dev evaluation
 ```
 
 Optional `data_metadata={...}` passed to `fit` records dataset provenance supplied

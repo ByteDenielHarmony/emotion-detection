@@ -371,6 +371,9 @@ def test_training_defaults_and_no_implicit_preparation(tmp_path, monkeypatch, ca
     assert options.gradient_accumulation_steps == 4
     assert options.gradient_checkpointing is True
     assert options.prepare_data is False
+    assert options.monitor == "macro_f1"
+    assert options.early_stopping_patience is None
+    assert options.early_stopping_min_delta == 0
     assert "Final test evaluation was not run" in capsys.readouterr().out
 
 
@@ -414,6 +417,12 @@ def test_training_flags_are_forwarded(tmp_path, monkeypatch):
                 "--local-files-only",
                 "--prepare-data",
                 "--non-interactive",
+                "--monitor",
+                "loss",
+                "--early-stopping-patience",
+                "3",
+                "--early-stopping-min-delta",
+                "0.001",
             ]
         )
         == 0
@@ -424,11 +433,20 @@ def test_training_flags_are_forwarded(tmp_path, monkeypatch):
     assert options.gradient_accumulation_steps == 8 and options.batch_size == 1
     assert options.gradient_checkpointing is False
     assert options.prepare_data and options.local_files_only and options.non_interactive
+    assert options.monitor == "loss" and options.early_stopping_patience == 3
+    assert options.early_stopping_min_delta == 0.001
 
 
 @pytest.mark.parametrize(
     "flag,value",
-    [("--epochs", "0"), ("--learning-rate", "nan"), ("--batch-size", "-1")],
+    [
+        ("--epochs", "0"),
+        ("--learning-rate", "nan"),
+        ("--batch-size", "-1"),
+        ("--early-stopping-patience", "0"),
+        ("--early-stopping-min-delta", "-1"),
+        ("--early-stopping-min-delta", "nan"),
+    ],
 )
 def test_invalid_training_arguments_are_parser_errors(flag, value):
     with pytest.raises(SystemExit) as error:
@@ -544,4 +562,33 @@ def test_invalid_run_fails_before_explicit_preparation(tmp_path, monkeypatch):
         )
         == 2
     )
+    assert not list(tmp_path.iterdir())
+
+
+def test_invalid_early_stopping_fails_before_explicit_preparation(
+    tmp_path, monkeypatch, capsys
+):
+    from emotion_detection.experiments import reference as experiment
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid early stopping must fail before preparing data")
+
+    monkeypatch.setattr(experiment, "prepare_reference_dataset", forbidden)
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--project-root",
+                str(tmp_path),
+                "--prepare-data",
+                "--device",
+                "cpu",
+                "--early-stopping-min-delta",
+                "0.1",
+            ]
+        )
+        == 2
+    )
+    assert "requires early_stopping_patience" in capsys.readouterr().err
     assert not list(tmp_path.iterdir())

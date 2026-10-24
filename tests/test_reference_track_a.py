@@ -512,3 +512,115 @@ def test_cli_training_roundtrip_uses_prepared_data_only(
     assert "eval_macro_f1" in metrics
     assert not any(key.startswith("test_") for key in metrics)
     assert "Final test evaluation was not run" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "losses,min_delta,expected_epoch,best_epoch,best_loss",
+    [
+        ([0.8, 0.5, 0.6, 0.7, 0.5], 0.001, 4, 2, 0.5),
+        ([0.8, 0.79, 0.78, 0.78], 0.1, 3, 3, 0.78),
+    ],
+)
+def test_early_stopping_retains_best_and_latest_and_all_epoch_diagnostics(
+    tmp_path,
+    checkpoint_factory,
+    frames,
+    monkeypatch,
+    capsys,
+    losses,
+    min_delta,
+    expected_epoch,
+    best_epoch,
+    best_loss,
+):
+    from emotion_detection.reference_baselines.transformer import (
+        WeightedMultilabelTrainer,
+    )
+
+    # Script only validation loss, not gradients, to exercise deterministic
+    # checkpoint selection/early stopping while still doing real tiny-model training.
+    original_loop = WeightedMultilabelTrainer.evaluation_loop
+    scripted_losses = iter(losses)
+
+    def evaluation_loop(self, *args, **kwargs):
+        result = original_loop(self, *args, **kwargs)
+        result.metrics["eval_loss"] = next(scripted_losses)
+        return result
+
+    monkeypatch.setattr(WeightedMultilabelTrainer, "evaluation_loop", evaluation_loop)
+    other = tmp_path / "runs/another-run/training/checkpoint-999/sentinel.txt"
+    other.parent.mkdir(parents=True)
+    other.write_text("preserve unrelated run")
+    model = TrackAClassifier(
+        str(checkpoint_factory()), max_length=16, device="cpu", local_files_only=True
+    )
+    model.fit(
+        *frames,
+        output_dir=tmp_path / "runs",
+        run_id="early-stop",
+        epochs=6,
+        batch_size=2,
+        gradient_accumulation_steps=2,
+        monitor="loss",
+        early_stopping_patience=2,
+        early_stopping_min_delta=min_delta,
+    )
+    metadata = model.metadata["training"]
+    assert metadata["monitor"] == "loss"
+    assert metadata["best_metric"] == best_loss
+    assert metadata["monitor_direction"] == "minimize"
+    assert metadata["stopped_early"] is True
+    assert metadata["stopping_reason"] == "early_stopping"
+    assert metadata["epochs_completed"] == expected_epoch
+    assert metadata["global_step"] == expected_epoch
+    assert metadata["best_epoch"] == best_epoch
+    assert model.metadata["training_arguments"]["greater_is_better"] is False
+    assert model.metadata["training_arguments"]["save_total_limit"] == 2
+
+    history = [
+        json.loads(line)
+        for line in (model.run_dir / "epoch_history.jsonl").read_text().splitlines()
+    ]
+    assert [record["epoch"] for record in history] == list(range(1, expected_epoch + 1))
+    assert (
+        len(history) == expected_epoch
+    )  # Final best-model evaluation is not an extra epoch.
+    assert history[-1]["stop_requested"] is True
+    assert all(set(record["confusion_matrices"]) == set(ENGLISH) for record in history)
+    assert all(sum(record["support"].values()) > 0 for record in history)
+    assert metadata["best_macro_f1"] == max(
+        record["metrics"]["macro_f1"] for record in history
+    )
+    selected = json.loads((model.run_dir / "validation_report.json").read_text())
+    assert selected["epoch"] == best_epoch
+    assert selected["metrics"]["loss"] == best_loss
+    assert (
+        selected["confusion_matrices"] == history[best_epoch - 1]["confusion_matrices"]
+    )
+    metrics = json.loads((model.run_dir / "metrics.json").read_text())
+    assert metadata["selected_checkpoint_macro_f1"] == metrics["eval_macro_f1"]
+    assert metadata["selected_checkpoint_loss"] == best_loss
+    checkpoints = list((model.run_dir / "training").glob("checkpoint-*"))
+    assert len(checkpoints) == 2
+    assert (model.run_dir / f"training/checkpoint-{best_epoch}") in checkpoints
+    assert (model.run_dir / f"training/checkpoint-{expected_epoch}") in checkpoints
+    assert other.read_text() == "preserve unrelated run"
+    restored = TrackAClassifier.load(model.run_dir / "checkpoint", device="cpu")
+    for name, value in model.model.state_dict().items():
+        assert torch.equal(value.cpu(), restored.model.state_dict()[name].cpu())
+    output = capsys.readouterr().out
+    for epoch in range(1, expected_epoch + 1):
+        assert f"Development metrics - epoch {epoch}" in output
+    assert "Selected checkpoint development metrics" in output
+
+
+def test_invalid_early_stopping_fails_before_initialization(frames, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid training control must fail before initializing weights")
+
+    monkeypatch.setattr(
+        "emotion_detection.reference_baselines.track_a.load_sequence_classifier",
+        forbidden,
+    )
+    with pytest.raises(ValueError, match="requires"):
+        TrackAClassifier().fit(*frames, early_stopping_min_delta=0.1)

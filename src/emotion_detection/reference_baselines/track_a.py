@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    EarlyStoppingCallback,
     TrainingArguments,
 )
 
@@ -36,6 +37,10 @@ from emotion_detection.reference_baselines.data import (
     validate_frame,
     validate_label_names,
     validate_partition_separation,
+)
+from emotion_detection.reference_baselines.training import (
+    DevelopmentReportingCallback,
+    validate_training_control,
 )
 from emotion_detection.reference_baselines.transformer import (
     DEFAULT_MODEL_NAME,
@@ -139,6 +144,9 @@ class TrackAClassifier:
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         mixed_precision="auto",
+        monitor="macro_f1",
+        early_stopping_patience=None,
+        early_stopping_min_delta=0.0,
         data_metadata=None,
     ):
         """Train from the configured checkpoint; save the best validation model.
@@ -153,6 +161,9 @@ class TrackAClassifier:
         validate_frame(train_data, names)
         validate_frame(validation_data, names)
         validate_partition_separation(train_data, validation_data)
+        validate_training_control(
+            monitor, early_stopping_patience, early_stopping_min_delta
+        )
         if not math.isfinite(epochs) or epochs <= 0:
             raise ValueError("epochs must be positive and finite")
         if not math.isfinite(learning_rate) or learning_rate <= 0:
@@ -211,6 +222,9 @@ class TrackAClassifier:
         )
         run_dir.mkdir(parents=True, exist_ok=False)
         self.run_dir = run_dir
+        reporting = DevelopmentReportingCallback(
+            run_dir, names, monitor=monitor, threshold=self.threshold
+        )
         self.metadata = {
             "schema_version": 1,
             "track": "a",
@@ -255,6 +269,11 @@ class TrackAClassifier:
                 "positive_class_weights": weights.tolist(),
                 "optimizer": "adamw_torch",
                 "weight_decay": 0.0,
+                "monitor": monitor,
+                "monitor_direction": "minimize" if monitor == "loss" else "maximize",
+                "early_stopping_patience": early_stopping_patience,
+                "early_stopping_min_delta": early_stopping_min_delta,
+                "checkpoint_retention": "at_most_two_protecting_best_and_latest",
             },
             "reference": {
                 "paper": "https://aclanthology.org/2025.semeval-1.327/",
@@ -262,18 +281,22 @@ class TrackAClassifier:
                 "revision": "08d4a59ad950ad78265322cf3d3dbf41a5888f90",
                 "deviations": [
                     "Development partition used for validation, never the test set",
-                    "Best validation macro-F1 checkpoint retained",
+                    f"Best development {monitor} checkpoint retained",
                     "Microbatching and gradient checkpointing for limited VRAM",
                     "Checkpoint is configurable; exact published scores not claimed",
                 ],
             },
         }
+        if early_stopping_patience is not None:
+            self.metadata["reference"]["deviations"].append(
+                "Optional development-based early stopping enabled"
+            )
 
         def compute_metrics(prediction):
             # sigmoid(logit) >= threshold, with stable sigmoid for large logits.
             probabilities = torch.from_numpy(prediction.predictions).sigmoid().numpy()
-            return multilabel_metrics(
-                prediction.label_ids, probabilities >= self.threshold, names
+            return reporting.capture(
+                prediction.label_ids, probabilities >= self.threshold
             )
 
         args = TrainingArguments(
@@ -287,10 +310,10 @@ class TrackAClassifier:
             gradient_checkpointing_kwargs={"use_reentrant": False},
             eval_strategy="epoch",
             save_strategy="epoch",
-            save_total_limit=1,
+            save_total_limit=2,
             load_best_model_at_end=True,
-            metric_for_best_model="macro_f1",
-            greater_is_better=True,
+            metric_for_best_model=monitor,
+            greater_is_better=monitor != "loss",
             optim="adamw_torch",
             weight_decay=0.0,
             fp16=precision == "fp16",
@@ -307,6 +330,15 @@ class TrackAClassifier:
             json.dumps(self.metadata, indent=2, allow_nan=False) + "\n",
             encoding="utf-8",
         )
+        early_stopping = None
+        callbacks = []
+        if early_stopping_patience is not None:
+            early_stopping = EarlyStoppingCallback(
+                early_stopping_patience=early_stopping_patience,
+                early_stopping_threshold=early_stopping_min_delta,
+            )
+            callbacks.append(early_stopping)
+        callbacks.append(reporting)
         trainer = WeightedMultilabelTrainer(
             model=self.model,
             args=args,
@@ -316,16 +348,55 @@ class TrackAClassifier:
             data_collator=EmotionDataCollator(self.tokenizer),
             compute_metrics=compute_metrics,
             pos_weights=weights,
+            callbacks=callbacks,
         )
         training_result = trainer.train()
-        metrics = {**training_result.metrics, **trainer.evaluate()}
+        # Trainer has restored the selected best weights. Do not count this final
+        # evaluation as another epoch or change the early-stopping counter.
+        reporting.epoch_reporting = False
+        if early_stopping is not None:
+            trainer.remove_callback(early_stopping)
+        selected_metrics = trainer.evaluate()
+        metrics = {**training_result.metrics, **selected_metrics}
         self.model = trainer.model
         self.model.eval()
-        self.metadata["training"]["best_macro_f1"] = trainer.state.best_metric
+        if trainer.state.best_model_checkpoint is None:
+            raise RuntimeError(
+                "Training completed without a selected validation checkpoint"
+            )
+        best_step = int(Path(trainer.state.best_model_checkpoint).name.split("-")[-1])
+        best_epoch = next(
+            record["epoch"]
+            for record in reporting.history
+            if record["global_step"] == best_step
+        )
+        stopped_early = (
+            early_stopping is not None
+            and early_stopping.early_stopping_patience_counter
+            >= early_stopping_patience
+            and trainer.state.global_step < trainer.state.max_steps
+        )
+        self.metadata["training"].update(
+            {
+                "best_metric": trainer.state.best_metric,
+                "best_macro_f1": max(
+                    record["metrics"]["macro_f1"] for record in reporting.history
+                ),
+                "selected_checkpoint_macro_f1": selected_metrics["eval_macro_f1"],
+                "selected_checkpoint_loss": selected_metrics["eval_loss"],
+                "best_epoch": best_epoch,
+                "epochs_completed": trainer.state.epoch,
+                "stopped_early": stopped_early,
+                "stopping_reason": "early_stopping" if stopped_early else "epoch_limit",
+            }
+        )
         self.metadata["training"]["best_checkpoint"] = (
             trainer.state.best_model_checkpoint
         )
         self.metadata["training"]["global_step"] = trainer.state.global_step
+        reporting.selected_report(
+            epoch=best_epoch, global_step=best_step, metrics=selected_metrics
+        )
         self._fitted = True
         self.save(run_dir / "checkpoint")
         (run_dir / "metadata.json").write_text(

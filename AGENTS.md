@@ -102,12 +102,27 @@
 - Match official-format in-memory frames: id, text, and named emotion columns.
   Preserve prediction IDs and row order. Missing emotion annotations are not
   negative labels; select the correct per-language schema explicitly.
-- Use PyTorch and Transformers. Keep training reproducible, validate on development
-  data, and select the best validation macro-F1 checkpoint, never a test checkpoint.
+- Use PyTorch and Transformers. Keep training reproducible and validate on
+  development data only. Default checkpoint selection maximizes macro-F1;
+  `--monitor loss` explicitly selects minimum development loss instead. Never
+  select checkpoints or stop training using test performance.
+- Early stopping is opt-in via `--early-stopping-patience`; the default fixed
+  two-epoch recipe remains available. Checkpoint selection and stopping share
+  one monitor. Min-delta controls patience resets, not absolute-best selection.
 - Save self-contained model weights, tokenizer, label mapping, threshold, and
   metadata under `output/runs/<run-id>/checkpoint/`. Keep metrics and run metadata
-  alongside it. Never overwrite an existing run. Intermediate Trainer checkpoints
-  under the run's `training/` directory also include resumable training state.
+  alongside it. Never overwrite an existing run. Trainer rotation keeps at most
+  two intermediate checkpoints under that new run's `training/`, protecting best
+  and latest and retaining optimizer state. Do not implement broad cleanup across
+  runs or delete existing checkpoints outside the current training directory.
+- Print development metrics and one 2x2 confusion matrix per emotion each epoch,
+  reusing predictions from validation. Matrix rows are actual absent/present;
+  columns are predicted absent/present. Keep all reports in `epoch_history.jsonl`
+  regardless of checkpoint rotation, and put the selected report in
+  `validation_report.json`. The final best-model evaluation is not another epoch.
+- Record the monitor, selected best metric/epoch, actual completed epochs, and
+  stopping reason. Do not report best loss as F1: `best_macro_f1` is the maximum
+  observed epoch F1; selected checkpoint metrics are recorded separately.
 - Memory-conscious defaults use 256 tokens, microbatch 2, accumulation 4,
   gradient checkpointing, and automatic CUDA BF16/FP16 where supported. These
   settings are not a guarantee of fitting every 16 GB GPU; verify on real hardware.
