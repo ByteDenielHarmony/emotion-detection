@@ -67,7 +67,8 @@
   still prepares data for compatibility. Never call it as a read-only loader.
 - Training requires prepared data unless `--prepare-data` is explicitly passed.
   Device/argument validation must happen before that preparation. Do not silently
-  repair stale data, fall back from explicitly requested CUDA, or score test data.
+  repair stale data or fall back from explicitly requested CUDA. Never score test
+  data during training or checkpoint selection.
 - Use Python modules and CLI commands, not notebooks. Do not introduce an
   experiment configuration framework or extra infrastructure without a request.
 - Reference baselines live under `src/emotion_detection/reference_baselines/`.
@@ -109,6 +110,18 @@
 - Early stopping is opt-in via `--early-stopping-patience`; the default fixed
   two-epoch recipe remains available. Checkpoint selection and stopping share
   one monitor. Min-delta controls patience resets, not absolute-best selection.
+- The CLI experiment runner evaluates the held-out test set once by default,
+  only after `fit` has selected/restored the best development checkpoint and
+  exported it. `--skip-test` disables this phase for development runs. Model
+  `fit` remains train/dev-only; test results never alter selection or thresholds.
+- Keep final testing separate in `evaluation/reference.py`, receiving data in
+  memory. Save non-overwriting `test_metrics.json`, `test_report.json`, and
+  `test_predictions.csv` without modifying development reports or checkpoint
+  weights/metadata. Match recorded CUDA BF16/FP16 evaluation precision where
+  supported (CPU is FP32), and record actual precision and the test fingerprint.
+- Do not retrospectively evaluate existing real runs without an explicit request.
+  Tests must use synthetic held-out data. Seeing test results repeatedly does not
+  authorize tuning on them; document the holdout limitation clearly.
 - Save self-contained model weights, tokenizer, label mapping, threshold, and
   metadata under `output/runs/<run-id>/checkpoint/`. Keep metrics and run metadata
   alongside it. Never overwrite an existing run. Trainer rotation keeps at most

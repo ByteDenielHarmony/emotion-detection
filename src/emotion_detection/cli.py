@@ -243,6 +243,11 @@ def build_parser():
         action="store_true",
         help="Never prompt during --prepare-data",
     )
+    reference.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="Skip final held-out test evaluation after the best checkpoint is saved",
+    )
     reference.set_defaults(handler=_train_reference)
     return parser
 
@@ -381,6 +386,7 @@ def _train_reference(args):
         "local_files_only",
         "prepare_data",
         "non_interactive",
+        "skip_test",
     )
     options = ReferenceTrainingOptions(
         **{key: getattr(args, key) for key in keys},
@@ -389,7 +395,12 @@ def _train_reference(args):
     run = train_reference(options)
     print(f"Run: {run}")
     print(f"Best validation checkpoint: {run / 'checkpoint'}")
-    print("Final test evaluation was not run")
+    if args.skip_test:
+        print("Final test evaluation skipped (--skip-test)")
+    else:
+        print(f"Final test metrics: {run / 'test_metrics.json'}")
+        print(f"Final test report: {run / 'test_report.json'}")
+        print(f"Final test predictions: {run / 'test_predictions.csv'}")
     return 0
 
 

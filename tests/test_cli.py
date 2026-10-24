@@ -374,7 +374,8 @@ def test_training_defaults_and_no_implicit_preparation(tmp_path, monkeypatch, ca
     assert options.monitor == "macro_f1"
     assert options.early_stopping_patience is None
     assert options.early_stopping_min_delta == 0
-    assert "Final test evaluation was not run" in capsys.readouterr().out
+    assert options.skip_test is False
+    assert "Final test metrics:" in capsys.readouterr().out
 
 
 def test_training_flags_are_forwarded(tmp_path, monkeypatch):
@@ -415,6 +416,7 @@ def test_training_flags_are_forwarded(tmp_path, monkeypatch):
                 "--run-id",
                 "example",
                 "--local-files-only",
+                "--skip-test",
                 "--prepare-data",
                 "--non-interactive",
                 "--monitor",
@@ -435,6 +437,7 @@ def test_training_flags_are_forwarded(tmp_path, monkeypatch):
     assert options.prepare_data and options.local_files_only and options.non_interactive
     assert options.monitor == "loss" and options.early_stopping_patience == 3
     assert options.early_stopping_min_delta == 0.001
+    assert options.skip_test is True
 
 
 @pytest.mark.parametrize(
@@ -482,7 +485,10 @@ def test_training_missing_data_never_initializes_pretrained_weights(
     assert not list(tmp_path.iterdir())
 
 
-def test_prepare_data_training_flag_orders_stages(local_reference, monkeypatch):
+@pytest.mark.parametrize("skip_test", [False, True])
+def test_prepare_data_training_flag_orders_stages(
+    local_reference, monkeypatch, skip_test
+):
     from emotion_detection.experiments import reference as experiment
 
     calls = []
@@ -508,9 +514,16 @@ def test_prepare_data_training_flag_orders_stages(local_reference, monkeypatch):
             assert kwargs["data_metadata"]["language"] == "eng"
             self.run_dir = kwargs["output_dir"] / "fake-run"
 
+    def evaluate(model, test, **kwargs):
+        calls.append("test")
+        assert model.run_dir.name == "fake-run"
+        assert len(test) == 2
+        assert test["source_split"].eq("test").all()
+
     monkeypatch.setattr(experiment, "TrackAClassifier", Model)
     monkeypatch.setattr(experiment, "prepare_reference_dataset", prepare_data)
     monkeypatch.setattr(experiment, "load_prepared_reference_dataset", load_data)
+    monkeypatch.setattr(experiment, "evaluate_reference_test", evaluate)
     assert (
         main(
             [
@@ -522,11 +535,52 @@ def test_prepare_data_training_flag_orders_stages(local_reference, monkeypatch):
                 "cpu",
                 "--prepare-data",
                 "--non-interactive",
+                *(["--skip-test"] if skip_test else []),
             ]
         )
         == 0
     )
-    assert calls == ["prepare", "load", "fit"]
+    assert calls == ["prepare", "load", "fit"] + ([] if skip_test else ["test"])
+
+
+def test_final_test_failure_preserves_saved_training_outputs(
+    local_reference, monkeypatch, capsys
+):
+    from emotion_detection.experiments import reference as experiment
+
+    root = local_reference
+    reference.prepare_reference_dataset(project_root=root, interactive=False)
+
+    class Model:
+        def __init__(self, **kwargs):
+            self.model_name = kwargs["model_name"]
+
+        def fit(self, train, dev, **kwargs):
+            self.run_dir = kwargs["output_dir"] / "test-failure"
+            checkpoint = self.run_dir / "checkpoint"
+            checkpoint.mkdir(parents=True)
+            (checkpoint / "model.safetensors").write_bytes(b"preserve trained weights")
+            (self.run_dir / "metrics.json").write_text('{"eval_macro_f1": 0.7}')
+
+    def fail(model, test, **kwargs):
+        assert (model.run_dir / "checkpoint/model.safetensors").is_file()
+        raise RuntimeError("synthetic inference failure")
+
+    monkeypatch.setattr(experiment, "TrackAClassifier", Model)
+    monkeypatch.setattr(experiment, "evaluate_reference_test", fail)
+    assert (
+        main(["train", "reference", "--project-root", str(root), "--device", "cpu"])
+        == 2
+    )
+    error = capsys.readouterr().err
+    assert "Training completed" in error and "test-failure" in error
+    assert "Final test evaluation failed" in error
+    assert (
+        root / "output/runs/test-failure/checkpoint/model.safetensors"
+    ).read_bytes() == b"preserve trained weights"
+    assert json.loads((root / "output/runs/test-failure/metrics.json").read_text()) == {
+        "eval_macro_f1": 0.7
+    }
 
 
 @pytest.mark.parametrize("track", ["unknown"])

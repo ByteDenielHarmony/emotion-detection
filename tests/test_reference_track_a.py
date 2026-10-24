@@ -425,8 +425,9 @@ def test_precision_and_device_selection(monkeypatch):
         resolve_precision("bf16", "cuda")
 
 
+@pytest.mark.parametrize("skip_test", [False, True])
 def test_cli_training_roundtrip_uses_prepared_data_only(
-    tmp_path, checkpoint_factory, frames, monkeypatch, capsys
+    tmp_path, checkpoint_factory, frames, monkeypatch, capsys, skip_test
 ):
     from emotion_detection.cli import main
     from emotion_detection.datasets import reference
@@ -497,6 +498,7 @@ def test_cli_training_roundtrip_uses_prepared_data_only(
                 "2",
                 "--run-id",
                 "cli-tiny",
+                *(["--skip-test"] if skip_test else []),
             ]
         )
         == 0
@@ -511,7 +513,26 @@ def test_cli_training_roundtrip_uses_prepared_data_only(
     metrics = json.loads((run / "metrics.json").read_text())
     assert "eval_macro_f1" in metrics
     assert not any(key.startswith("test_") for key in metrics)
-    assert "Final test evaluation was not run" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    if skip_test:
+        assert "Final test evaluation skipped (--skip-test)" in output
+        assert not list(run.glob("test_*"))
+    else:
+        assert "Held-out test metrics - selected checkpoint" in output
+        assert "Final test metrics:" in output
+        report = json.loads((run / "test_report.json").read_text())
+        assert report["split"] == "test" and report["selection_split"] == "dev"
+        assert report["epoch"] == restored.metadata["training"]["best_epoch"]
+        assert report["inference_precision"] == "no"
+        assert report["rows"] == len(test)
+        assert (
+            report["data_fingerprint"]
+            == restored.metadata["data"]["provenance"]["prepared_fingerprints"]["test"]
+        )
+        predictions = pd.read_csv(run / "test_predictions.csv")
+        assert predictions["id"].tolist() == test["id"].tolist()
+        assert list(predictions.columns) == ["id", *restored.label_names]
+        assert json.loads((run / "test_metrics.json").read_text()) == report["metrics"]
 
 
 @pytest.mark.parametrize(

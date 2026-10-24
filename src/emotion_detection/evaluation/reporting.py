@@ -1,18 +1,21 @@
-"""Readable development reports without plotting or additional inference."""
+"""Readable classification reports without plotting or additional inference."""
 
 
-def format_development_report(record, *, selected=False):
+def format_classification_report(record, *, heading):
     metrics = record["metrics"]
-    heading = (
-        "Selected checkpoint development metrics" if selected else "Development metrics"
+    position = ""
+    if record.get("epoch") is not None:
+        position = f" - epoch {record['epoch']:g}, step {record['global_step']}"
+    monitor_label = (
+        "Development selection monitor" if record.get("split") == "test" else "Monitor"
     )
     lines = [
-        f"\n{heading} - epoch {record['epoch']:g}, step {record['global_step']}",
+        f"\n{heading}{position}",
         (
             f"Loss: {metrics['loss']:.4f} | Macro-F1: {metrics['macro_f1']:.4f} | "
             f"Micro-F1: {metrics['micro_f1']:.4f}"
         ),
-        f"Monitor: {record['monitor']} ({record['direction']})",
+        f"{monitor_label}: {record['monitor']} ({record['direction']})",
         f"{'Emotion':<14} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>9}",
     ]
     for name in record["label_names"]:
@@ -35,3 +38,10 @@ def format_development_report(record, *, selected=False):
             ]
         )
     return "\n".join(lines)
+
+
+def format_development_report(record, *, selected=False):
+    heading = (
+        "Selected checkpoint development metrics" if selected else "Development metrics"
+    )
+    return format_classification_report(record, heading=heading)

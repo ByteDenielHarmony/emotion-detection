@@ -414,6 +414,13 @@ class TrackAClassifier:
 
     def predict_proba(self, data: pd.DataFrame, *, batch_size=8) -> pd.DataFrame:
         """Return id and named probabilities in exactly the input row order."""
+        return self._predict_values(data, batch_size=batch_size, probabilities=True)
+
+    def predict_logits(self, data: pd.DataFrame, *, batch_size=8) -> pd.DataFrame:
+        """Return raw logits for stable loss calculation without a second pass."""
+        return self._predict_values(data, batch_size=batch_size, probabilities=False)
+
+    def _predict_values(self, data, *, batch_size, probabilities):
         self._require_fitted()
         validate_frame(data, self.label_names, require_labels=False, allow_empty=True)
         if not isinstance(batch_size, int) or batch_size < 1:
@@ -434,13 +441,14 @@ class TrackAClassifier:
         )
         device = next(self.model.parameters()).device
         self.model.eval()
-        probabilities = []
+        batches = []
         with torch.inference_mode():
             for batch in loader:
                 batch = {name: value.to(device) for name, value in batch.items()}
-                logits = self.model(**batch).logits
-                probabilities.append(logits.float().sigmoid().cpu().numpy())
-        values = np.concatenate(probabilities)
+                logits = self.model(**batch).logits.float()
+                values = logits.sigmoid() if probabilities else logits
+                batches.append(values.cpu().numpy())
+        values = np.concatenate(batches)
         for index, name in enumerate(self.label_names):
             result[name] = values[:, index]
         return result

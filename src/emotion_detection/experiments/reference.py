@@ -11,6 +11,7 @@ from emotion_detection.datasets import (
 )
 from emotion_detection.datasets.acquisition import AcquisitionError
 from emotion_detection.datasets.sources import DEFAULT_RELEASE, get_reference_sources
+from emotion_detection.evaluation.reference import evaluate_reference_test
 from emotion_detection.reference_baselines import TrackAClassifier
 from emotion_detection.reference_baselines.training import validate_training_control
 from emotion_detection.reference_baselines.transformer import (
@@ -47,10 +48,11 @@ class ReferenceTrainingOptions:
     local_files_only: bool = False
     prepare_data: bool = False
     non_interactive: bool = False
+    skip_test: bool = False
 
 
 def train_reference(options: ReferenceTrainingOptions) -> Path:
-    """Train A using prepared train/dev data; never score or train on test data."""
+    """Train Track A on train/dev; optionally test the exported best checkpoint."""
     if options.track != "a":
         raise ValueError(
             "Reference training implements Track A only; B and C training are not implemented"
@@ -128,4 +130,12 @@ def train_reference(options: ReferenceTrainingOptions) -> Path:
         early_stopping_min_delta=options.early_stopping_min_delta,
         data_metadata=data.metadata,
     )
+    if not options.skip_test:
+        try:
+            evaluate_reference_test(model, data.test, batch_size=options.batch_size)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise RuntimeError(
+                f"Training completed; the selected checkpoint is saved under {model.run_dir}. "
+                f"Final test evaluation failed: {error}"
+            ) from error
     return model.run_dir

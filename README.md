@@ -175,18 +175,35 @@ Run `emotion train reference --help` for defaults and all options.
 prevent dataset downloads explicitly requested by `--prepare-data`.
 
 Runs are saved under `output/runs/<run-id>/`, and existing runs are never
-overwritten. Checkpoint selection uses development data only. **Training does not
-evaluate the final test set.** Evaluation and prediction remain available through
-the Python model API; their CLI commands are not implemented yet.
+overwritten. Training, early stopping, and checkpoint selection use development
+data only. **After the selected best checkpoint has been exported, the CLI
+evaluates it once on the held-out test set by default.** It prints test loss,
+macro/micro-F1, per-emotion metrics, and confusion matrices. These results never
+change the selected checkpoint or threshold.
+
+Pass `--skip-test` for development-only runs. Repeatedly inspecting test scores
+while deciding model settings compromises the holdout; use development results
+for those choices and reserve test results for the final comparison. Test artifacts
+are separate: `test_metrics.json`, `test_report.json`, and `test_predictions.csv`
+(IDs and binary labels in original input order). Existing results are never
+overwritten. If final testing fails, the trained checkpoint and development
+artifacts remain saved, and the CLI exits with an error identifying the run.
+
+Test inference follows the run's BF16/FP16 setting on CUDA; CPU uses FP32, and the
+actual inference precision is recorded in the test report. The report also records
+the selected epoch, frozen threshold, and test-data fingerprint. Development
+results in `metrics.json` and `validation_report.json` are not overwritten.
+Standalone evaluation/prediction CLI commands are not implemented yet.
 
 ### Longer training with early stopping
 
-The default remains two epochs with no early stopping. To set a larger epoch
-limit and stop when development loss stops improving:
+The default remains two epochs with no early stopping. Macro-F1 is already the
+default selection metric; no `--monitor` flag is needed. To set a larger epoch
+limit and stop when development macro-F1 stops improving:
 
 ```bash
 uv run --locked emotion train reference --track a --language eng --device cuda \
-  --epochs 20 --monitor loss --early-stopping-patience 3 \
+  --epochs 20 --early-stopping-patience 3 \
   --early-stopping-min-delta 0.001
 ```
 
@@ -204,7 +221,8 @@ recall, F1 and support, followed by one binary confusion matrix per emotion.
 Matrices use actual absent/present as rows and predicted absent/present as columns:
 `[[TN, FP], [FN, TP]]`. Reports reuse validation predictions, without another
 inference pass or any test evaluation. A final report is labeled separately as
-the selected checkpoint's development evaluation.
+the selected checkpoint's development evaluation, followed by the held-out test
+report unless `--skip-test` was supplied.
 
 The trainer saves at every epoch and rotates old checkpoints, retaining at most
 two intermediate checkpoints while protecting the best and latest. An extra
@@ -256,6 +274,16 @@ checkpoint = model.run_dir / "checkpoint"
 restored = TrackAClassifier.load(checkpoint)
 ```
 
+`fit` itself remains development-only; automatic final testing belongs to the CLI
+experiment runner, not the model. For an existing frozen checkpoint, explicitly
+evaluate it through the same helper (once, without overwriting test artifacts):
+
+```python
+from emotion_detection.evaluation.reference import evaluate_reference_test
+
+evaluate_reference_test(restored, data.test, batch_size=2)
+```
+
 The initial fit downloads the selected pretrained model and tokenizer unless
 already cached. Pass `local_files_only=True` to forbid downloads, or supply a
 local checkpoint directory as `model_name`. Known base/large revisions are pinned;
@@ -286,7 +314,10 @@ output/runs/<run-id>/
 ├── epoch_history.jsonl     All epoch development metrics and confusion matrices
 ├── validation_report.json  Selected checkpoint's development report
 ├── metadata.json           Settings, versions, provenance, and stopping summary
-└── metrics.json            Training statistics and selected model's dev evaluation
+├── metrics.json            Training statistics and selected model's dev evaluation
+├── test_metrics.json       Held-out test scalar metrics (CLI, unless skipped)
+├── test_report.json        Test provenance, metrics, support, and confusion matrices
+└── test_predictions.csv    Original test IDs and selected model's binary predictions
 ```
 
 Optional `data_metadata={...}` passed to `fit` records dataset provenance supplied
