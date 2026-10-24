@@ -2,7 +2,8 @@
 
 import hashlib
 import io
-from dataclasses import replace
+import json
+from dataclasses import FrozenInstanceError, replace
 from urllib.error import HTTPError, URLError
 
 import pandas as pd
@@ -15,6 +16,7 @@ from emotion_detection.datasets.sources import (
     ENGLISH_LABELS,
     OFFICIAL_REVISION,
     SIX_LABELS,
+    TrackALanguageSpec,
     available_reference_languages,
     get_reference_sources,
 )
@@ -95,6 +97,52 @@ def test_track_a_availability_matches_the_verified_release():
         )
         == 84
     )
+
+
+def test_registry_refactor_preserves_all_public_source_metadata():
+    # Frozen before consolidating hashes/schemas: covers every field, ordered
+    # label list and split of all 84 SourceSpecs, not only digest string lengths.
+    manifest = {
+        language: [source.metadata() for source in get_reference_sources("a", language)]
+        for language in available_reference_languages()
+    }
+    encoded = json.dumps(
+        manifest,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert hashlib.sha256(encoded).hexdigest() == (
+        "6d5a716aa350f9e4d1d7bde7dc1973480c1259dc8637386b53b1a3cc033a95b6"
+    )
+
+
+@pytest.mark.parametrize("labels", [(), ("joy", "joy"), ("unknown",), ["joy"]])
+def test_language_registration_rejects_invalid_schemas(labels):
+    with pytest.raises(ValueError, match="Language schema"):
+        TrackALanguageSpec(labels, "0" * 64, "1" * 64, "2" * 64)
+
+
+@pytest.mark.parametrize("split", ["train", "dev", "test"])
+def test_language_registration_rejects_invalid_split_hashes(split):
+    fields = {f"{name}_sha256": "0" * 64 for name in ("train", "dev", "test")}
+    fields[f"{split}_sha256"] = "not-a-sha256"
+    with pytest.raises(ValueError, match=f"Invalid SHA-256 for Track A {split}"):
+        TrackALanguageSpec(ENGLISH_LABELS, **fields)
+
+
+@pytest.mark.parametrize(
+    "field", ["label_names", "train_sha256", "dev_sha256", "test_sha256"]
+)
+def test_language_registration_is_immutable(field):
+    specification = TrackALanguageSpec(ENGLISH_LABELS, "0" * 64, "1" * 64, "2" * 64)
+    with pytest.raises(FrozenInstanceError):
+        setattr(specification, field, None)
+
+
+def test_language_registration_requires_all_three_track_a_splits():
+    with pytest.raises(TypeError):
+        TrackALanguageSpec(ENGLISH_LABELS, train_sha256="0" * 64, dev_sha256="1" * 64)
 
 
 @pytest.mark.parametrize("language", ["ind", "jav", "xho", "zul"])
