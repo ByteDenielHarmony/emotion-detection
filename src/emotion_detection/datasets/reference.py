@@ -1,5 +1,6 @@
 """Independent reference dataset acquisition, preparation and in-memory loading."""
 
+import json
 import platform
 import subprocess
 from pathlib import Path
@@ -8,9 +9,21 @@ import pandas as pd
 import pyarrow
 
 from emotion_detection.datasets.acquisition import acquire_sources, read_source
-from emotion_detection.datasets.reference_track_a import prepare_track_a
-from emotion_detection.datasets.reference_types import ReferencePreparationError
-from emotion_detection.datasets.sources import DEFAULT_RELEASE, get_reference_sources
+from emotion_detection.datasets.reference_track_a import (
+    PREPARATION_VARIANT,
+    prepare_track_a,
+)
+from emotion_detection.datasets.reference_types import (
+    ReferenceDataset,
+    ReferencePreparationError,
+    prepared_fingerprint,
+)
+from emotion_detection.datasets.sources import (
+    DEFAULT_RELEASE,
+    SIX_LABELS,
+    SPLITS,
+    get_reference_sources,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -45,9 +58,18 @@ def _write_audits(directory, sources, diagnostics, metadata=None):
         index=False,
         lineterminator="\n",
     )
+    # CSV remains the dataset artifact format. JSON-encoded cells retain types
+    # and nesting for read-only loading; summary.csv is the human-readable view.
+    pd.DataFrame(
+        [
+            {"key": key, "value": json.dumps(value, allow_nan=False)}
+            for key, value in (metadata or {"status": "failed"}).items()
+        ],
+        columns=["key", "value"],
+    ).to_csv(directory / "metadata.csv", index=False, lineterminator="\n")
 
 
-def load_reference_dataset(
+def prepare_reference_dataset(
     track="a",
     language="eng",
     *,
@@ -139,3 +161,141 @@ def load_reference_dataset(
         getattr(dataset, split).to_parquet(output / f"{split}.parquet", index=False)
     _write_audits(analysis, sources, diagnostics, dataset.metadata)
     return dataset
+
+
+def load_reference_dataset(
+    track="a",
+    language="eng",
+    *,
+    release=DEFAULT_RELEASE,
+    project_root=PROJECT_ROOT,
+    interactive=None,
+):
+    """Compatibility API: acquire and prepare, as before.
+
+    New callers should explicitly choose prepare_reference_dataset for writes or
+    load_prepared_reference_dataset for strictly read-only loading.
+    """
+    return prepare_reference_dataset(
+        track,
+        language,
+        release=release,
+        project_root=project_root,
+        interactive=interactive,
+    )
+
+
+def load_prepared_reference_dataset(
+    track="a",
+    language="eng",
+    *,
+    release=DEFAULT_RELEASE,
+    project_root=PROJECT_ROOT,
+):
+    """Read and validate saved data without acquisition, preparation, or writes.
+
+    Verify the selected release/schema, source manifest, canonical fingerprints,
+    row counts, targets, provenance columns, and separation of all partitions.
+    Missing or stale artifacts are errors, never a reason to regenerate silently.
+    """
+    sources = get_reference_sources(track, language, release)
+    root = Path(project_root).resolve()
+    output = root / "data/processed/reference_baselines" / f"track_{track}" / language
+    analysis = (
+        root / "output/analysis/reference_baselines" / f"track_{track}" / language
+    )
+
+    def fail(reason):
+        raise ReferencePreparationError(
+            f"{reason}. Run 'emotion data prepare --dataset reference --track {track} "
+            f"--language {language}' with the same --project-root and --release"
+        )
+
+    try:
+        records = pd.read_csv(
+            analysis / "metadata.csv", dtype=str, keep_default_na=False
+        )
+        if list(records.columns) != ["key", "value"] or not records["key"].is_unique:
+            fail("Prepared metadata has invalid or duplicate fields")
+        metadata = {row.key: json.loads(row.value) for row in records.itertuples()}
+        json.dumps(metadata, allow_nan=False)
+        labels = sources[0].label_names
+        if (
+            metadata.get("schema_version") != 1
+            or metadata.get("track") != track
+            or metadata.get("language") != language
+            or metadata.get("release") != release
+            or metadata.get("label_names") != list(labels)
+            or metadata.get("preparation_variant") != PREPARATION_VARIANT
+            or metadata.get("test_ids_and_order_preserved") is not True
+            or metadata.get("source_manifest")
+            != [source.metadata() for source in sources]
+        ):
+            fail(
+                "Prepared metadata does not match the requested dataset/release/policy"
+            )
+
+        manifest = pd.read_csv(analysis / "source_manifest.csv", keep_default_na=False)
+        expected = []
+        for source in sources:
+            record = source.metadata()
+            record["label_names"] = "|".join(source.label_names)
+            expected.append(record)
+        if manifest.to_dict("records") != expected:
+            fail("Prepared source manifest does not match the pinned inputs")
+
+        frames = {
+            split: pd.read_parquet(output / f"{split}.parquet") for split in SPLITS
+        }
+        for split, frame in frames.items():
+            required = {
+                "id",
+                "text",
+                "source_row",
+                "source_language",
+                "source_split",
+                *labels,
+            }
+            if (
+                frame.empty
+                or not frame.columns.is_unique
+                or not required.issubset(frame.columns)
+                or set(frame.columns) & set(SIX_LABELS) != set(labels)
+            ):
+                fail(f"{split}: invalid prepared columns or empty partition")
+            if (
+                not frame["id"].is_unique
+                or not frame["id"]
+                .map(lambda value: isinstance(value, str) and bool(value.strip()))
+                .all()
+                or not frame["text"]
+                .map(lambda value: isinstance(value, str) and bool(value.strip()))
+                .all()
+                or not frame[list(labels)].isin([0, 1]).all().all()
+                or not frame["source_language"].eq(language).all()
+                or not frame["source_split"].eq(split).all()
+            ):
+                fail(f"{split}: invalid IDs, text, annotations, or provenance")
+            if (
+                len(frame) != metadata["split_counts"][split]["output_rows"]
+                or prepared_fingerprint(frame)
+                != metadata["prepared_fingerprints"][split]
+            ):
+                fail(f"{split}: prepared row count or fingerprint mismatch")
+        for index, first in enumerate(SPLITS):
+            for second in SPLITS[index + 1 :]:
+                if set(frames[first]["id"]) & set(frames[second]["id"]) or set(
+                    frames[first]["text"].str.lower()
+                ) & set(frames[second]["text"].str.lower()):
+                    fail(f"Prepared {first}/{second} partitions overlap")
+    except ReferencePreparationError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, pyarrow.ArrowException) as error:
+        fail(f"Prepared reference data is missing or unreadable: {error}")
+    return ReferenceDataset(
+        train=frames["train"],
+        dev=frames["dev"],
+        test=frames["test"],
+        label_names=labels,
+        metadata=metadata,
+    )

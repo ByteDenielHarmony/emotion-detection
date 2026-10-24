@@ -5,19 +5,19 @@ priority cross-split occurrences. Valid within-split duplicates are retained in
 every split; no majority voting, A/B matching or inferred annotation is used.
 """
 
-import hashlib
-
 import pandas as pd
 
 from emotion_detection.datasets.reference_types import (
     ReferenceDataset,
     ReferencePreparationError,
+    prepared_fingerprint,
 )
 from emotion_detection.datasets.sources import SIX_LABELS, SPLITS
 
 ISSUE_COLUMNS = ("split", "source_row", "id", "text", "emotion", "value", "reason")
 EXCLUSION_COLUMNS = ("split", "source_row", "id", "text", "text_key", "reason")
 OVERLAP_COLUMNS = (*EXCLUSION_COLUMNS, "higher_priority_splits")
+PREPARATION_VARIANT = "official-a-leakage-controlled-v1"
 
 
 def prepare_track_a(frames, *, label_names, language, source_metadata):
@@ -206,7 +206,7 @@ def prepare_track_a(frames, *, label_names, language, source_metadata):
         "track": "a",
         "language": language,
         "label_names": list(names),
-        "preparation_variant": "official-a-leakage-controlled-v1",
+        "preparation_variant": PREPARATION_VARIANT,
         "policies": {
             "text_identity": "Python str.lower() for diagnostics only; model text unchanged",
             "split_priority": ["test", "dev", "train"],
@@ -224,12 +224,7 @@ def prepare_track_a(frames, *, label_names, language, source_metadata):
             for value in counts.values()
         ),
         "prepared_fingerprints": {
-            split: hashlib.sha256(
-                prepared[split]
-                .to_json(orient="split", index=False, force_ascii=False)
-                .encode()
-            ).hexdigest()
-            for split in SPLITS
+            split: prepared_fingerprint(prepared[split]) for split in SPLITS
         },
         "references": [
             "https://aclanthology.org/2025.semeval-1.327/",

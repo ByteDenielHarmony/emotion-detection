@@ -17,6 +17,14 @@
   synthetic tests exist. Reference Tracks B and C are not yet implemented.
   Inspect current code and distinguish implemented, tested, and trained models;
   a passing tiny-model test is not evidence of a pretrained-model benchmark run.
+- The argparse app supports `emotion` and `python -m emotion_detection`: `doctor`,
+  `data languages`, `data prepare`, read-only reference `data check`, and
+  `train reference` (A only).
+  Do not advertise evaluation/prediction CLI commands until implemented.
+- Track A reference manifests cover 28 languages (84 pinned source files). Use
+  `available_reference_languages()` for discovery, not duplicated CLI lists.
+  English excludes disgust, Afrikaans excludes surprise, and the other registered
+  languages use all six labels. Respect the declared schema, not just label count.
 
 ## Environment and dependencies
 
@@ -49,6 +57,17 @@
   - `experiments/`: experiment orchestration and run artifact management.
 - Keep CLI argument handling separate from reusable logic. Favor composition,
   existing scikit-learn components, and small interfaces over large hierarchies.
+- Keep help/version lightweight: do not import PyTorch/Transformers or acquire
+  data/models while constructing the parser. Imports belong in command handlers.
+- CLI training orchestration lives in `experiments/reference.py`; dataset file
+  I/O remains in `datasets/`, not in classifiers or argument-parsing code.
+- `prepare_reference_dataset` acquires and persists data;
+  `load_prepared_reference_dataset` only reads, validates provenance/fingerprints,
+  and checks schemas and split separation. The historical `load_reference_dataset`
+  still prepares data for compatibility. Never call it as a read-only loader.
+- Training requires prepared data unless `--prepare-data` is explicitly passed.
+  Device/argument validation must happen before that preparation. Do not silently
+  repair stale data, fall back from explicitly requested CUDA, or score test data.
 - Use Python modules and CLI commands, not notebooks. Do not introduce an
   experiment configuration framework or extra infrastructure without a request.
 - Reference baselines live under `src/emotion_detection/reference_baselines/`.
@@ -121,6 +140,8 @@ git diff --check
   handling, leakage prevention, retrieval, and metric edge cases.
 - Default tests must use synthetic data without network access or downloaded
   datasets. Keep small synthetic fixtures under `tests/fixtures/`.
+- Pytest discovery is restricted to `tests/`; nested checkouts are not test suites
+  of this project and must not be collected or committed accidentally.
 - Report which checks ran and disclose failures or anything not verified.
 
 ## Generated files and Git hygiene
@@ -136,8 +157,8 @@ git diff --check
 
 - Keep the README brief and operational, without university-project framing or
   descriptions of future model choices beyond the agreed project scope.
-- Document only available commands as runnable. Keep the README's dataset
-  preparation section as TODO until its documentation is requested.
+- Document only available commands as runnable. Keep setup, data-preparation,
+  and training examples aligned with the CLI and retain pip-only instructions.
 - Reports use LaTeX, including the required AI-usage appendix. Do not introduce
   a report build toolchain without a separate request.
 - Update relevant documentation when supported commands or setup requirements

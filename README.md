@@ -98,29 +98,114 @@ python -m ruff check src tests
 
 Tests use synthetic data and do not require external datasets.
 
+## Command-line application
+
+After setup, the same app is available through either entry point:
+
+```bash
+uv run --locked emotion --help
+uv run --locked python -m emotion_detection --help
+```
+
+Without uv, use `emotion` or `python -m emotion_detection` from the activated
+environment. Run commands from the repository root, or pass `--project-root PATH`
+before the command or among its options. Use `--verbose` for error tracebacks.
+Help and version commands do not import PyTorch, download files, or initialize a
+model.
+
+### Environment checks
+
+```bash
+uv run --locked emotion doctor --device cuda
+```
+
+This reports package versions, CUDA availability, GPU memory, and BF16 support.
+Requesting unavailable CUDA is an error; `--device auto` allows CPU fallback.
+Training also checks the requested device, so running `doctor` first is optional.
+
+### Prepare and check data
+
+```bash
+uv run --locked emotion data languages --track a
+uv run --locked emotion data prepare --dataset reference --track a --language eng --non-interactive
+uv run --locked emotion data check --dataset reference --track a --language eng
+```
+
+Preparation delegates acquisition, verification, and persistence to the dataset
+package. It may download missing raw files and regenerate prepared files and
+audits, but never overwrites existing raw files. `--non-interactive` disables
+manual-recovery prompts. Reference Track A supports 28 registered languages;
+`data languages` lists them without acquiring or preparing data. Only the selected
+language is prepared or trained, not all languages automatically. B/C are not
+implemented. `--release` selects a registered pinned dataset release. The older
+dataset CLI's `--list-languages` option remains available.
+
+`data check` is strictly read-only: it validates the release, source manifest,
+canonical data fingerprints, row counts, annotations, and split separation. It
+fails with preparation instructions if files or provenance are missing or stale;
+it never repairs or downloads anything. Existing reference outputs prepared before
+the machine-readable `metadata.csv` was introduced need one explicit re-preparation.
+Readiness checks currently cover reference datasets only.
+
+The separate English joint A+B pipeline is still available unchanged:
+
+```bash
+uv run --locked emotion data prepare --dataset joint --non-interactive
+```
+
+### Train the Track A reference model
+
+```bash
+uv run --locked emotion train reference --track a --language eng --device cuda
+```
+
+Training uses the read-only prepared-data loader. It never prepares datasets
+implicitly. To explicitly run preparation before training instead:
+
+```bash
+uv run --locked emotion train reference --track a --language eng --device cuda --prepare-data --non-interactive
+```
+
+Use `--model-name FacebookAI/xlm-roberta-base` for a smaller model, or a local
+checkpoint path. Other options include `--revision`, `--epochs`, `--learning-rate`,
+`--batch-size`, `--gradient-accumulation-steps`, `--max-length`, `--seed`,
+`--threshold`, `--mixed-precision`, `--no-gradient-checkpointing`, and `--run-id`.
+Run `emotion train reference --help` for defaults and all options.
+`--local-files-only` forbids pretrained model/tokenizer downloads; it does not
+prevent dataset downloads explicitly requested by `--prepare-data`.
+
+Runs are saved under `output/runs/<run-id>/`, and existing runs are never
+overwritten. Checkpoint selection uses development data only. **Training does not
+evaluate the final test set.** Evaluation and prediction remain available through
+the Python model API; their CLI commands are not implemented yet.
+
 ## Track A reference baseline
 
 The model API accepts **already-loaded pandas DataFrames** using the official
 Track A columns: `id`, `text`, and binary emotion columns. English uses `anger`,
-`fear`, `joy`, `sadness`, and `surprise`; some other languages also use `disgust`.
+`fear`, `joy`, `sadness`, and `surprise`. Afrikaans uses five labels including
+`disgust` but excluding `surprise`; the other registered languages use six labels.
 Labels are aligned by name, not column position. Raw text is not lowercased.
 File loading and dataset preparation are deliberately separate from the model.
 
-Given `train_data` and `validation_data` supplied by your data pipeline:
+After explicit preparation, use the read-only loader to supply model inputs:
 
 ```python
+from emotion_detection.datasets import load_prepared_reference_dataset
 from emotion_detection.reference_baselines import TrackAClassifier
 
+data = load_prepared_reference_dataset(track="a", language="eng")
 model = TrackAClassifier(
     model_name="FacebookAI/xlm-roberta-large",
     # Use "FacebookAI/xlm-roberta-base" here for a smaller checkpoint.
     device="auto",  # "cuda" requires a GPU; "cpu" forces CPU execution.
+    label_names=data.label_names,
 )
-model.fit(train_data, validation_data)
+model.fit(data.train, data.dev, data_metadata=data.metadata)
 
-predictions = model.predict(validation_data)  # id + named binary predictions
-probabilities = model.predict_proba(validation_data)
-scores = model.evaluate(validation_data)
+predictions = model.predict(data.dev)  # id + named binary predictions
+probabilities = model.predict_proba(data.dev)
+scores = model.evaluate(data.dev)
 
 checkpoint = model.run_dir / "checkpoint"
 restored = TrackAClassifier.load(checkpoint)
@@ -169,7 +254,18 @@ implemented; tokenization and transformer utilities are separated for reuse.
 
 ## Dataset preparation
 
-TODO.
+Reference acquisition/preparation and read-only loading are separate APIs:
+`prepare_reference_dataset(...)` writes artifacts;
+`load_prepared_reference_dataset(...)` only reads and validates them.
+The existing `load_reference_dataset(...)` remains an acquisition/preparation
+compatibility wrapper; it is **not** a read-only loader.
+
+Reference data is independent of the joint English A+B dataset. Prepared reference
+splits are stored in `data/processed/reference_baselines/track_a/<language>/`, and
+CSV audits in `output/analysis/reference_baselines/track_a/<language>/`.
+`metadata.csv` stores typed metadata in JSON-encoded CSV cells for read-only
+loading; `summary.csv` remains the flattened human-readable report. Raw inputs
+and the joint pipeline's existing behavior are unchanged.
 
 ## Update dependencies
 
@@ -194,6 +290,7 @@ dependencies, and raw dataset files. The lockfile alone does not pin the data.
 | Path | Purpose |
 | --- | --- |
 | `src/emotion_detection/` | Dataset, feature, model, evaluation, and experiment modules |
+| `src/emotion_detection/cli.py`, `src/emotion_detection/__main__.py` | Console and module entry points |
 | `src/emotion_detection/reference_baselines/` | Modular transformer reference baselines |
 | `tests/` | Automated tests and small synthetic fixtures |
 | `data/raw/`, `data/processed/` | Original and prepared datasets |

@@ -1,6 +1,8 @@
 """Offline Track A checks: synthetic frames and tiny local transformer weights."""
 
+import hashlib
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -421,3 +423,92 @@ def test_precision_and_device_selection(monkeypatch):
     assert resolve_precision("auto", "cuda") == "fp16"
     with pytest.raises(ValueError, match="BF16"):
         resolve_precision("bf16", "cuda")
+
+
+def test_cli_training_roundtrip_uses_prepared_data_only(
+    tmp_path, checkpoint_factory, frames, monkeypatch, capsys
+):
+    from emotion_detection.cli import main
+    from emotion_detection.datasets import reference
+    from emotion_detection.datasets.sources import get_reference_sources
+    from emotion_detection.experiments import reference as experiment
+
+    train, dev = frames
+    test = dev.copy(deep=True)
+    test["id"] = ["test-1", "test-2"]
+    test["text"] = ["untouched held-out one", "untouched held-out two"]
+    splits = {"train": train, "dev": dev, "test": test}
+    sources = []
+    for source in get_reference_sources():
+        path = (
+            tmp_path
+            / "data/raw/reference_baselines"
+            / source.release
+            / source.relative_path
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        splits[source.split].to_csv(path, index=False)
+        sources.append(
+            replace(source, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        )
+    monkeypatch.setattr(
+        reference, "get_reference_sources", lambda *a, **kw: tuple(sources)
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Training must neither access the network nor regenerate data")
+
+    monkeypatch.setattr("emotion_detection.datasets.acquisition.urlopen", forbidden)
+    assert (
+        main(
+            [
+                "data",
+                "prepare",
+                "--project-root",
+                str(tmp_path),
+                "--non-interactive",
+            ]
+        )
+        == 0
+    )
+    prepared = tmp_path / "data/processed/reference_baselines/track_a/eng"
+    before = {path: path.read_bytes() for path in prepared.iterdir()}
+    monkeypatch.setattr(experiment, "prepare_reference_dataset", forbidden)
+    pretrained = checkpoint_factory()
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--project-root",
+                str(tmp_path),
+                "--model-name",
+                str(pretrained),
+                "--local-files-only",
+                "--device",
+                "cpu",
+                "--max-length",
+                "16",
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--gradient-accumulation-steps",
+                "2",
+                "--run-id",
+                "cli-tiny",
+            ]
+        )
+        == 0
+    )
+    run = tmp_path / "output/runs/cli-tiny"
+    assert (run / "checkpoint/model.safetensors").is_file()
+    restored = TrackAClassifier.load(run / "checkpoint", device="cpu")
+    assert restored.metadata["data"]["train_rows"] == len(train)
+    assert restored.metadata["data"]["validation_rows"] == len(dev)
+    assert restored.metadata["data"]["provenance"]["language"] == "eng"
+    assert all(path.read_bytes() == content for path, content in before.items())
+    metrics = json.loads((run / "metrics.json").read_text())
+    assert "eval_macro_f1" in metrics
+    assert not any(key.startswith("test_") for key in metrics)
+    assert "Final test evaluation was not run" in capsys.readouterr().out
