@@ -218,3 +218,29 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project datasets: retain directory placeholders, not generated contents
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+
+# Experiment outputs: retain directory placeholders, not generated contents
+/output/**
+!/output/**/
+!/output/**/.gitkeep
+
+# LaTeX build artifacts (keep report sources, references, and figures)
+/reports/build/
+/reports/*.pdf
+/reports/**/*.aux
+/reports/**/*.bbl
+/reports/**/*.bcf
+/reports/**/*.blg
+/reports/**/*.fdb_latexmk
+/reports/**/*.fls
+/reports/**/*.lof
+/reports/**/*.lot
+/reports/**/*.out
+/reports/**/*.run.xml
+/reports/**/*.synctex.gz
+/reports/**/*.toc

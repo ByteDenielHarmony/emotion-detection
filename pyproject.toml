@@ -1,0 +1,15 @@
+[project]
+name = "emotion-detection"
+version = "0.1.0"
+description = "English emotion detection and intensity estimation for SemEval-2025 Task 11"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "scikit-learn>=1.9.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+]
