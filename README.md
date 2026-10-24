@@ -1,8 +1,10 @@
 # Emotion detection and intensity estimation
 
-English emotion detection and intensity estimation using SemEval-2025 Task 11
-data. The baseline combines TF-IDF, logistic regression, and nearest-neighbor
-features.
+Emotion detection and intensity estimation using SemEval-2025 Task 11 data.
+The main experiments focus on English Tracks A and B, using TF-IDF, logistic
+regression, and nearest-neighbor features. A separate planned workstream
+provides one reference baseline model for each of Tracks A, B, and C, including
+multilingual settings, following the original task paper.
 
 ## Prerequisites
 
