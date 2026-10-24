@@ -8,7 +8,10 @@ import pyarrow
 
 from emotion_detection.datasets.acquisition import AcquisitionError
 from emotion_detection.datasets.reference import PROJECT_ROOT, load_reference_dataset
-from emotion_detection.datasets.sources import DEFAULT_RELEASE
+from emotion_detection.datasets.sources import (
+    DEFAULT_RELEASE,
+    available_reference_languages,
+)
 
 
 def main(argv=None):
@@ -18,8 +21,16 @@ def main(argv=None):
     parser.add_argument("--release", default=DEFAULT_RELEASE)
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--non-interactive", action="store_true")
+    parser.add_argument(
+        "--list-languages",
+        action="store_true",
+        help="List supported languages for this track/release without downloading data.",
+    )
     args = parser.parse_args(argv)
     try:
+        if args.list_languages:
+            print(" ".join(available_reference_languages(args.track, args.release)))
+            return 0
         data = load_reference_dataset(
             track=args.track,
             language=args.language,

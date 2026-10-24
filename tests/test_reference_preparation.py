@@ -1,19 +1,21 @@
 """Independent Track A preparation and classifier input contract; no training."""
 
 import hashlib
+import io
 import json
 from dataclasses import replace
 
 import pandas as pd
 import pytest
 
-from emotion_detection.datasets import ReferenceDataset, reference
+from emotion_detection.datasets import ReferenceDataset, reference, reference_cli
 from emotion_detection.datasets.reference_cli import main
 from emotion_detection.datasets.reference_track_a import prepare_track_a
 from emotion_detection.datasets.reference_types import ReferencePreparationError
 from emotion_detection.datasets.sources import (
     ENGLISH_LABELS,
     SIX_LABELS,
+    available_reference_languages,
     get_reference_sources,
 )
 
@@ -276,6 +278,90 @@ def test_cli_for_reference_data_only(local_inputs, capsys):
     root, _, _ = local_inputs
     assert main(["--project-root", str(root), "--non-interactive"]) == 0
     assert "prepared rows" in capsys.readouterr().out
+
+
+def test_cli_lists_languages_without_loading_data(monkeypatch, tmp_path, capsys):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Listing languages must not acquire or prepare any data")
+
+    monkeypatch.setattr(reference_cli, "load_reference_dataset", forbidden)
+    assert main(["--list-languages", "--project-root", str(tmp_path)]) == 0
+    assert tuple(capsys.readouterr().out.split()) == available_reference_languages()
+    assert not list(tmp_path.iterdir())
+
+
+def test_cli_does_not_advertise_unimplemented_tracks(capsys):
+    assert main(["--track", "c", "--list-languages"]) == 2
+    assert "not implemented" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("language", available_reference_languages())
+def test_each_language_loads_only_its_own_inputs_and_passes_classifier_validation(
+    language,
+    tmp_path,
+    monkeypatch,
+):
+    from emotion_detection.datasets import acquisition
+    from emotion_detection.reference_baselines.data import (
+        validate_frame,
+        validate_partition_separation,
+    )
+
+    sources, payloads = [], {}
+    for source in get_reference_sources("a", language):
+        frame = pd.DataFrame(
+            [
+                row(
+                    f"{language}-{source.split}",
+                    f"{language} {source.split} Привіт 你好",
+                    labels=source.label_names,
+                    joy=1,
+                    disgust=1,
+                )
+            ]
+        )
+        payload = frame.to_csv(index=False).encode("utf-8")
+        sources.append(replace(source, sha256=hashlib.sha256(payload).hexdigest()))
+        payloads[source.url] = payload
+    selected = []
+
+    def selected_sources(track, chosen_language, release):
+        selected.append((track, chosen_language, release))
+        assert (track, chosen_language) == ("a", language)
+        return tuple(sources)
+
+    requests = []
+
+    def download(request, **kwargs):
+        requests.append(request.full_url)
+        return io.BytesIO(payloads[request.full_url])
+
+    monkeypatch.setattr(reference, "get_reference_sources", selected_sources)
+    monkeypatch.setattr(acquisition, "urlopen", download)
+    data = reference.load_reference_dataset(
+        "a", language, project_root=tmp_path, interactive=False
+    )
+    assert len(selected) == 1
+    assert requests == [source.url for source in sources]
+    assert data.label_names == sources[0].label_names
+    for split in ("train", "dev", "test"):
+        frame = getattr(data, split)
+        validate_frame(frame, data.label_names)
+        assert frame.iloc[0]["text"] == f"{language} {split} Привіт 你好"
+        if "disgust" in data.label_names:
+            assert frame.iloc[0]["disgust"] == 1
+    validate_partition_separation(data.train, data.dev)
+    if language == "afr":
+        assert "disgust" in data.train and "surprise" not in data.train
+    if language == "eng":
+        assert "disgust" not in data.train
+    raw_languages = list(
+        (
+            tmp_path / "data/raw/reference_baselines" / sources[0].release / "track_a"
+        ).iterdir()
+    )
+    assert [path.name for path in raw_languages] == [language]
+    assert not (tmp_path / "data/raw/track_b").exists()
 
 
 def test_invalid_evaluation_writes_issues_but_not_canonical_data(

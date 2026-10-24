@@ -10,10 +10,12 @@ import pytest
 
 from emotion_detection.datasets import acquisition
 from emotion_detection.datasets.sources import (
+    AFRIKAANS_LABELS,
     DEFAULT_RELEASE,
     ENGLISH_LABELS,
     OFFICIAL_REVISION,
     SIX_LABELS,
+    available_reference_languages,
     get_reference_sources,
 )
 
@@ -36,10 +38,9 @@ def csv_source():
     return source, payload
 
 
-@pytest.mark.parametrize(
-    "language,labels", [("eng", ENGLISH_LABELS), ("deu", SIX_LABELS)]
-)
-def test_explicit_manifest_pins_complete_track_a(language, labels):
+@pytest.mark.parametrize("language", available_reference_languages())
+def test_explicit_manifest_pins_complete_track_a(language):
+    labels = {"eng": ENGLISH_LABELS, "afr": AFRIKAANS_LABELS}.get(language, SIX_LABELS)
     sources = get_reference_sources("a", language)
     assert [s.split for s in sources] == ["train", "dev", "test"]
     assert len({s.relative_path for s in sources}) == 3
@@ -51,6 +52,55 @@ def test_explicit_manifest_pins_complete_track_a(language, labels):
         assert source.language == language
         assert len(source.sha256) == 64
         assert "huggingface" not in source.url
+
+
+def test_track_a_availability_matches_the_verified_release():
+    assert available_reference_languages() == (
+        "afr",
+        "amh",
+        "arq",
+        "ary",
+        "chn",
+        "deu",
+        "eng",
+        "esp",
+        "hau",
+        "hin",
+        "ibo",
+        "kin",
+        "mar",
+        "orm",
+        "pcm",
+        "ptbr",
+        "ptmz",
+        "ron",
+        "rus",
+        "som",
+        "sun",
+        "swa",
+        "swe",
+        "tat",
+        "tir",
+        "ukr",
+        "vmw",
+        "yor",
+    )
+    assert (
+        len(
+            {
+                source.relative_path
+                for language in available_reference_languages()
+                for source in get_reference_sources("a", language)
+            }
+        )
+        == 84
+    )
+
+
+@pytest.mark.parametrize("language", ["ind", "jav", "xho", "zul"])
+def test_track_c_only_languages_are_not_claimed_as_track_a(language):
+    with pytest.raises(ValueError, match="Unsupported Track A language"):
+        get_reference_sources("a", language)
 
 
 @pytest.mark.parametrize(
