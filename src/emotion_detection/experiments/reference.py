@@ -51,6 +51,10 @@ class ReferenceTrainingOptions:
 
 def train_reference(options: ReferenceTrainingOptions) -> Path:
     """Train A using prepared train/dev data; never score or train on test data."""
+    if options.track != "a":
+        raise ValueError(
+            "Reference training implements Track A only; B and C training are not implemented"
+        )
     sources = get_reference_sources(options.track, options.language, options.release)
     validate_training_control(
         options.monitor,

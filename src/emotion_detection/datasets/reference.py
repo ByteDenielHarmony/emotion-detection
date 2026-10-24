@@ -9,10 +9,12 @@ import pandas as pd
 import pyarrow
 
 from emotion_detection.datasets.acquisition import acquire_sources, read_source
-from emotion_detection.datasets.reference_track_a import (
-    PREPARATION_VARIANT,
-    prepare_track_a,
+from emotion_detection.datasets.reference_labeled import (
+    PREPARATION_VARIANTS,
+    TARGET_VALUES,
 )
+from emotion_detection.datasets.reference_track_a import prepare_track_a
+from emotion_detection.datasets.reference_track_b import prepare_track_b
 from emotion_detection.datasets.reference_types import (
     ReferenceDataset,
     ReferencePreparationError,
@@ -115,7 +117,8 @@ def prepare_reference_dataset(
         for source in sources
     }
     try:
-        dataset, diagnostics = prepare_track_a(
+        prepare = {"a": prepare_track_a, "b": prepare_track_b}[track]
+        dataset, diagnostics = prepare(
             frames,
             label_names=sources[0].label_names,
             language=language,
@@ -226,7 +229,11 @@ def load_prepared_reference_dataset(
             or metadata.get("language") != language
             or metadata.get("release") != release
             or metadata.get("label_names") != list(labels)
-            or metadata.get("preparation_variant") != PREPARATION_VARIANT
+            or metadata.get("preparation_variant") != PREPARATION_VARIANTS[track]
+            or (
+                track == "b"
+                and metadata.get("target_values") != list(TARGET_VALUES[track])
+            )
             or metadata.get("test_ids_and_order_preserved") is not True
             or metadata.get("source_manifest")
             != [source.metadata() for source in sources]
@@ -271,7 +278,7 @@ def load_prepared_reference_dataset(
                 or not frame["text"]
                 .map(lambda value: isinstance(value, str) and bool(value.strip()))
                 .all()
-                or not frame[list(labels)].isin([0, 1]).all().all()
+                or not frame[list(labels)].isin(TARGET_VALUES[track]).all().all()
                 or not frame["source_language"].eq(language).all()
                 or not frame["source_split"].eq(split).all()
             ):

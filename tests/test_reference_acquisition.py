@@ -154,7 +154,7 @@ def test_track_c_only_languages_are_not_claimed_as_track_a(language):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"track": "b"},
+        {"track": "b", "language": "afr"},
         {"track": "c"},
         {"language": "unknown"},
         {"release": "main"},

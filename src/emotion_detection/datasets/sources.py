@@ -94,19 +94,35 @@ class TrackALanguageSpec:
     test_sha256: str
 
     def __post_init__(self):
-        if (
-            not isinstance(self.label_names, tuple)
-            or not self.label_names
-            or len(set(self.label_names)) != len(self.label_names)
-            or not set(self.label_names).issubset(SIX_LABELS)
-        ):
-            raise ValueError(
-                "Language schema must be an ordered tuple of unique emotions"
-            )
-        for split in SPLITS:
-            digest = getattr(self, f"{split}_sha256")
-            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise ValueError(f"Invalid SHA-256 for Track A {split}")
+        _validate_language_spec(self, "A")
+
+
+@dataclass(frozen=True)
+class TrackBLanguageSpec:
+    """An independently verified Track B schema and all three source hashes."""
+
+    label_names: tuple[str, ...]
+    train_sha256: str
+    dev_sha256: str
+    test_sha256: str
+
+    def __post_init__(self):
+        _validate_language_spec(self, "B")
+
+
+def _validate_language_spec(specification, track):
+    names = specification.label_names
+    if (
+        not isinstance(names, tuple)
+        or not names
+        or len(set(names)) != len(names)
+        or not set(names).issubset(SIX_LABELS)
+    ):
+        raise ValueError("Language schema must be an ordered tuple of unique emotions")
+    for split in SPLITS:
+        digest = getattr(specification, f"{split}_sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"Invalid SHA-256 for Track {track} {split}")
 
 
 # One registry owns both availability and label schemas: 28 languages, 84 files.
@@ -288,24 +304,98 @@ _TRACK_A_LANGUAGES = {
 }
 
 
+# Track B has ten complete language triplets at the pinned revision. All headers
+# and targets were inspected independently of Track A. Romanian has dev/test but
+# no train/ron.csv here: do not advertise it or substitute its Track A training.
+_TRACK_B_LANGUAGES = {
+    "amh": TrackBLanguageSpec(
+        SIX_LABELS,
+        "8708c7a40d2d5ac767c709a48a7ed55c43579c3a3016d773fc80fa58b4a162fd",
+        "af1841e8f246127be23a39a51fdaf6e3b39f6c8ce74124b0de190efc3669383d",
+        "a8fbced28ba185e21b2103833a0a9d0717b437101ae28ca0b5dc597d6e561e86",
+    ),
+    "arq": TrackBLanguageSpec(
+        SIX_LABELS,
+        "c5ebb9466efcb78ef02041ffe0fedfdebc444c1b777215cdd9c2d49774228d06",
+        "acd137d56c29706f74b6eeb5d7e1f78689a14c60d8b6e9bc8e8bb6770d62e068",
+        "0c111238647c118ff92390f6d9a399e4edf97623b0bcfd26a35e8a81724e6c4e",
+    ),
+    "chn": TrackBLanguageSpec(
+        SIX_LABELS,
+        "f844de6c1da6f33ab2a0c5ee7e280683973a31818067807c2ecb87a9879f84cd",
+        "10ee994ec515263f5a9498467c5871e83b68ba4b226b413afc326d46cf18c19d",
+        "4e74e9a6c92f54d77c9a13a9d7f88799f9e5a6066682ad4f990cfa8c7cb0637a",
+    ),
+    "deu": TrackBLanguageSpec(
+        SIX_LABELS,
+        "c495c65a5bc21cbcbabf18108dd0c1211f725508fd759c3383a00c38ba8ec39c",
+        "a04b12c27f6f70e944d33096401a50a04e0252a435b9d8f29bd626e6159d908a",
+        "cc876202ecec5a6877eaf017f5fde4946efac0dcd6cc471c4c5103a865e36333",
+    ),
+    "eng": TrackBLanguageSpec(
+        ENGLISH_LABELS,
+        "55167973e06833c9cf511140b3b44b25b1b04c91a2a953aa2a677126e838a0d7",
+        "3c2d7a27d5f9d9dbfbde29c098d173c995081f166796d88695cb0f2d9419f559",
+        "5092cd688d2d9dee129c34cb63d4abafb73759d5115e5c0fb144347c95991d42",
+    ),
+    "esp": TrackBLanguageSpec(
+        SIX_LABELS,
+        "3d0d55c5afb5dff90cc581a4280d024d6c8b1bcea314cabf00923250e19f617d",
+        "88991a80a86ee84f2689a0b61918a1e7b21964df60845bb3e24cf4429d226e38",
+        "e9a47593fffd0dac97736993d181f23364b81b8773d4eadb8f1750cc2f8886f1",
+    ),
+    "hau": TrackBLanguageSpec(
+        SIX_LABELS,
+        "13138c1b94e9b4559e0f60f89cfff46b0f4f779498ab24b39abe5cb2d1b617bd",
+        "5e693e698713c52ab9262f0c43da388fe08a8a79e3b30fdbc7b9a0c7cd0f4c88",
+        "99df4093c8bdb66bc93a4d6075a1ed38e3eab82932c56afbc3bcf4599779369d",
+    ),
+    "ptbr": TrackBLanguageSpec(
+        SIX_LABELS,
+        "6ade4b4bb0351f1a5efcf474aa0f71b5a5f68be09e53de57b5cfc8fe38902ab2",
+        "6ed2ff8add43381dab7a17881c45f08c9a4cd19b66d0bd955ef0e2b196663100",
+        "be8af0b237b89d76fcd8b8cd43b9c33c4b6389599e9a8e97526c70ca1d486906",
+    ),
+    "rus": TrackBLanguageSpec(
+        SIX_LABELS,
+        "6687afacd225ada937108635780be2dd21371c35af42d9f841a6aaae35a20ec7",
+        "d2b04f3dfc16283a41f53e2698061ae64e417355d5ba978045ee748bf8d9d014",
+        "7058100197efaef188cfb0ee429e9d8f434900be2a1572353dd0df07a4c16c8f",
+    ),
+    "ukr": TrackBLanguageSpec(
+        SIX_LABELS,
+        "92781503f1052c5cf00c29025f983397c174f3bde4f0fbb4ceb11d2559e7e780",
+        "60849f09be000289b4c34389d314acfef9274d114c3f65f93c591b3244e2699a",
+        "5b80a65488378feb051ded73bf76a53a0f3b9919c8fc6684b3d30867ca5cbbdf",
+    ),
+}
+
+
 def available_reference_languages(track="a", release=DEFAULT_RELEASE):
     """List registered languages without file I/O, downloads or preparation."""
-    if track != "a":
+    if track not in {"a", "b"}:
         raise ValueError(
-            "Reference data preparation currently implements Track A only; B and C are not implemented"
+            "Reference data preparation implements Tracks A and B; Track C is not implemented"
         )
     if release != DEFAULT_RELEASE:
         raise ValueError(f"Unsupported release: {release}")
-    return tuple(sorted(_TRACK_A_LANGUAGES))
+    registry = _TRACK_A_LANGUAGES if track == "a" else _TRACK_B_LANGUAGES
+    return tuple(sorted(registry))
 
 
 def get_reference_sources(track="a", language="eng", release=DEFAULT_RELEASE):
     languages = available_reference_languages(track, release)
+    if track == "b" and language == "ron":
+        raise ValueError(
+            "Unsupported Track B language: ron; the pinned release has no Track B train/ron.csv. "
+            "Track A training data will not be substituted."
+        )
     if language not in languages:
         raise ValueError(
-            f"Unsupported Track A language: {language}; available: {', '.join(languages)}"
+            f"Unsupported Track {track.upper()} language: {language}; available: {', '.join(languages)}"
         )
-    specification = _TRACK_A_LANGUAGES[language]
+    registry = _TRACK_A_LANGUAGES if track == "a" else _TRACK_B_LANGUAGES
+    specification = registry[language]
     return tuple(
         SourceSpec(
             track=track,
@@ -316,9 +406,9 @@ def get_reference_sources(track="a", language="eng", release=DEFAULT_RELEASE):
             revision=OFFICIAL_REVISION,
             url=(
                 f"https://raw.githubusercontent.com/{OFFICIAL_REPOSITORY}/{OFFICIAL_REVISION}/"
-                f"task-dataset/semeval-2025-task11-dataset/track_a/{split}/{language}.csv"
+                f"task-dataset/semeval-2025-task11-dataset/track_{track}/{split}/{language}.csv"
             ),
-            relative_path=f"track_a/{language}/{split}.csv",
+            relative_path=f"track_{track}/{language}/{split}.csv",
             file_format="csv",
             sha256=getattr(specification, f"{split}_sha256"),
             label_names=specification.label_names,

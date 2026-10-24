@@ -45,9 +45,13 @@ def _nonnegative_float(value):
     return number
 
 
-def _reference_selection(parser):
+def _reference_selection(parser, *, training=False):
     parser.add_argument(
-        "--track", default="a", help="Reference track (currently a only)"
+        "--track",
+        default="a",
+        help="Reference track (training: a only)"
+        if training
+        else "Reference track (a or b)",
     )
     parser.add_argument(
         "--language",
@@ -90,9 +94,7 @@ def build_parser():
         "languages", help="List registered reference languages without downloading data"
     )
     _common_options(languages)
-    languages.add_argument(
-        "--track", default="a", help="Reference track (currently a only)"
-    )
+    languages.add_argument("--track", default="a", help="Reference track (a or b)")
     languages.add_argument("--release", help="Registered pinned dataset release")
     languages.set_defaults(handler=_list_languages)
     prepare = data_commands.add_parser(
@@ -103,7 +105,7 @@ def build_parser():
         "--dataset", choices=("reference", "joint"), default="reference"
     )
     prepare.add_argument(
-        "--track", help="Reference track (currently a); not applicable to joint data"
+        "--track", help="Reference track (a or b); not applicable to joint data"
     )
     prepare.add_argument(
         "--language", help="Reference language (default eng); joint data is English"
@@ -133,7 +135,7 @@ def build_parser():
         "reference", help="Train the Track A reference model"
     )
     _common_options(reference)
-    _reference_selection(reference)
+    _reference_selection(reference, training=True)
     reference.add_argument(
         "--model-name",
         help="Hub model ID or local path (default: FacebookAI/xlm-roberta-large)",
