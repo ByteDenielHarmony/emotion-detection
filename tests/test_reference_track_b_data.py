@@ -490,8 +490,8 @@ def test_b_compatibility_preparation_api_and_cli(tmp_path, monkeypatch, capsys):
     assert snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("track", ["b", "c"])
-def test_non_a_training_fails_before_preparation_or_model_creation(
+@pytest.mark.parametrize("track", ["invalid", "d"])
+def test_unknown_training_track_fails_before_preparation_or_model_creation(
     track, tmp_path, monkeypatch, capsys
 ):
     from emotion_detection.experiments import reference as experiment
@@ -515,5 +515,5 @@ def test_non_a_training_fails_before_preparation_or_model_creation(
         )
         == 2
     )
-    assert "training are not implemented" in capsys.readouterr().err
+    assert "Select track" in capsys.readouterr().err
     assert not list(tmp_path.iterdir())

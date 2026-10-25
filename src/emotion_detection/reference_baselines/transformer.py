@@ -1,4 +1,4 @@
-"""Shared transformer initialization and the Track A/C classification objective."""
+"""Shared checkpoint initialization and a task-aware Hugging Face trainer."""
 
 from pathlib import Path
 
@@ -98,12 +98,13 @@ def positive_class_weights(labels):
     return torch.tensor(weights, dtype=torch.float32)
 
 
-class WeightedMultilabelTrainer(Trainer):
-    """Weighted BCE, shared by monolingual A and future cross-lingual C."""
+class ReferenceTrainer(Trainer):
+    """Delegate objectives to strategies; retain weighted BCE for legacy callers."""
 
-    def __init__(self, *args, pos_weights, **kwargs):
+    def __init__(self, *args, pos_weights, task=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.pos_weights = pos_weights
+        self.task = task
         # The loss below is a mean, not normalized by num_items_in_batch. Let
         # Trainer apply its usual gradient-accumulation scaling.
         self.model_accepts_loss_kwargs = False
@@ -114,9 +115,16 @@ class WeightedMultilabelTrainer(Trainer):
         inputs = dict(inputs)
         labels = inputs.pop("labels")
         outputs = model(**inputs)
+        if self.task is not None:
+            loss = self.task.loss(outputs.logits, labels, self.pos_weights)
+            return (loss, outputs) if return_outputs else loss
         loss = torch.nn.functional.binary_cross_entropy_with_logits(
             outputs.logits.float(),
             labels.float(),
             pos_weight=self.pos_weights.to(outputs.logits.device),
         )
         return (loss, outputs) if return_outputs else loss
+
+
+# Compatibility seam retained for existing integrations and checkpoint tests.
+WeightedMultilabelTrainer = ReferenceTrainer

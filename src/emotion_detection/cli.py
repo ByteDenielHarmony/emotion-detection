@@ -48,8 +48,8 @@ def _nonnegative_float(value):
 def _reference_selection(parser, *, training=False):
     parser.add_argument(
         "--track",
-        default="a",
-        help="Reference track (training: a only)"
+        default="all" if training else "a",
+        help="Reference track: all (default, runs A/B/C sequentially), a, b, or c"
         if training
         else "Reference track (a, b or c)",
     )
@@ -62,11 +62,10 @@ def _reference_selection(parser, *, training=False):
         "--release",
         help="Pinned dataset release (default: registered official release)",
     )
-    if not training:
-        parser.add_argument(
-            "--protocol",
-            help="Track C source-selection protocol (default: task-paper-family-v1)",
-        )
+    parser.add_argument(
+        "--protocol",
+        help="Track C source-selection protocol (default: task-paper-family-v1)",
+    )
 
 
 def build_parser():
@@ -145,7 +144,7 @@ def build_parser():
     _common_options(train)
     training_commands = train.add_subparsers(dest="training_command", required=True)
     reference = training_commands.add_parser(
-        "reference", help="Train the Track A reference model"
+        "reference", help="Train reference models (default: A, B, then C)"
     )
     _common_options(reference)
     _reference_selection(reference, training=True)
@@ -171,9 +170,9 @@ def build_parser():
     )
     reference.add_argument(
         "--monitor",
-        choices=("macro_f1", "loss"),
-        default="macro_f1",
-        help="Development metric for checkpoint selection and early stopping (default: %(default)s)",
+        choices=("auto", "macro_f1", "pearson", "loss"),
+        default="auto",
+        help="Selection/stopping metric (auto: A/C macro-F1, B Pearson); loss applies to every track",
     )
     reference.add_argument(
         "--early-stopping-patience",
@@ -222,8 +221,8 @@ def build_parser():
     reference.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Emotion probability threshold (default: %(default)s)",
+        default=None,
+        help="A/C emotion probability threshold (default 0.5); B uses argmax",
     )
     reference.add_argument(
         "--run-id", help="Nonexisting run name; otherwise generate a unique ID"
@@ -387,12 +386,23 @@ def _train_reference(args):
         "prepare_data",
         "non_interactive",
         "skip_test",
+        "protocol",
     )
     options = ReferenceTrainingOptions(
         **{key: getattr(args, key) for key in keys},
         release=args.release or DEFAULT_RELEASE,
     )
     run = train_reference(options)
+    if args.track == "all":
+        print(f"Suite: {run}")
+        print(f"Summary: {run / 'summary.json'}")
+        for track in ("a", "b", "c"):
+            print(f"Track {track.upper()} checkpoint: {run / track / 'checkpoint'}")
+        if args.skip_test:
+            print("Final test evaluation skipped (--skip-test)")
+        else:
+            print("Final test artifacts are saved separately under each track's run")
+        return 0
     print(f"Run: {run}")
     print(f"Best validation checkpoint: {run / 'checkpoint'}")
     if args.skip_test:

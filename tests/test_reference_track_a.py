@@ -21,7 +21,12 @@ from transformers import (
     XLMRobertaForSequenceClassification,
 )
 
-from emotion_detection.reference_baselines import TrackAClassifier
+from emotion_detection.reference_baselines import (
+    TrackAClassifier,
+    TrackBClassifier,
+    TrackCClassifier,
+    load_reference_model,
+)
 from emotion_detection.reference_baselines.data import (
     EmotionDataCollator,
     TokenizedEmotionDataset,
@@ -314,6 +319,14 @@ def test_train_save_load_and_predict_roundtrip(
     pd.testing.assert_frame_equal(predictions, restored.predict(unlabeled))
     assert restored.threshold == 0.4
     assert restored.label_names == names
+    legacy_path = tmp_path / "legacy-a-checkpoint"
+    classifier.save(legacy_path)
+    legacy_metadata = json.loads((legacy_path / "metadata.json").read_text())
+    legacy_metadata.pop("model_label_names")
+    legacy_metadata.pop("output_label_names")
+    (legacy_path / "metadata.json").write_text(json.dumps(legacy_metadata))
+    legacy = TrackAClassifier.load(legacy_path, device="cpu")
+    pd.testing.assert_frame_equal(predictions, legacy.predict(unlabeled))
     pd.testing.assert_frame_equal(train, original_train)
     pd.testing.assert_frame_equal(validation, original_validation)
     assert list(restored.predict(unlabeled.iloc[:0]).columns) == ["id", *names]
@@ -481,6 +494,8 @@ def test_cli_training_roundtrip_uses_prepared_data_only(
             [
                 "train",
                 "reference",
+                "--track",
+                "a",
                 "--project-root",
                 str(tmp_path),
                 "--model-name",
@@ -645,3 +660,356 @@ def test_invalid_early_stopping_fails_before_initialization(frames, monkeypatch)
     )
     with pytest.raises(ValueError, match="requires"):
         TrackAClassifier().fit(*frames, early_stopping_min_delta=0.1)
+
+
+@pytest.fixture
+def track_datasets(frames):
+    from emotion_detection.datasets.reference_types import (
+        CrosslingualReferenceDataset,
+        ReferenceDataset,
+        prepared_fingerprint,
+    )
+    from emotion_detection.reference_baselines.data import EMOTIONS
+
+    train, dev = (frame.copy(deep=True) for frame in frames)
+    test = dev.assign(id=["test-1", "test-2"], text=["held-out one", "held-out two"])
+    a = ReferenceDataset(train, dev, test, ENGLISH, {})
+    b_frames = []
+    for frame in (train, dev, test):
+        frame = frame.copy(deep=True)
+        for i, name in enumerate(ENGLISH):
+            frame[name] = (np.arange(len(frame)) + i) % 4
+        b_frames.append(frame)
+    b = ReferenceDataset(*b_frames, ENGLISH, {})
+
+    def masked(frame, language, split, source_track):
+        frame = frame.copy(deep=True)
+        for name in EMOTIONS:
+            if name not in frame:
+                frame[name] = pd.Series(pd.NA, index=frame.index, dtype="Int64")
+            frame[name] = frame[name].astype("Int64")
+            frame[f"known_{name}"] = frame[name].notna()
+        frame["source_language"], frame["source_split"], frame["source_track"] = (
+            language,
+            split,
+            source_track,
+        )
+        return frame
+
+    c_train = masked(train, "deu", "train", "a")
+    c_train["source_language"] = ["deu", "afr", "deu", "afr"]
+    c_train["id"] = ["shared", "shared", "third", "fourth"]  # Composite IDs.
+    c_dev = masked(dev, "deu", "dev", "a")
+    c_target = masked(
+        test.assign(
+            id=["target-dev-1", "target-dev-2"],
+            text=["target dev one", "target dev two"],
+        ),
+        "eng",
+        "dev",
+        "c",
+    )
+    c_test = masked(test, "eng", "test", "c")
+    c = CrosslingualReferenceDataset(
+        c_train, c_dev, c_target, c_test, ENGLISH, EMOTIONS, {}
+    )
+    for track, data in (("a", a), ("b", b), ("c", c)):
+        roles = (
+            ("train", "source_dev", "target_dev", "test")
+            if track == "c"
+            else ("train", "dev", "test")
+        )
+        data.metadata.update(
+            track=track,
+            language="eng",
+            label_names=list(ENGLISH),
+            release="synthetic",
+            prepared_fingerprints={
+                role: prepared_fingerprint(getattr(data, role)) for role in roles
+            },
+        )
+        if track == "c":
+            data.metadata.update(
+                model_label_names=list(EMOTIONS),
+                source_languages=["deu", "afr"],
+                protocol="synthetic",
+            )
+    return {"a": a, "b": b, "c": c}
+
+
+@pytest.mark.parametrize(
+    "track,model_class,metric",
+    [("b", TrackBClassifier, "pearson"), ("c", TrackCClassifier, "macro_f1")],
+)
+def test_b_c_train_predict_save_load_and_test(
+    track,
+    model_class,
+    metric,
+    track_datasets,
+    checkpoint_factory,
+    tmp_path,
+):
+    from emotion_detection.evaluation.reference import evaluate_reference_test
+
+    data = track_datasets[track]
+    original = data.train.copy(deep=True)
+    model = model_class(
+        str(checkpoint_factory()),
+        label_names=data.label_names,
+        max_length=16,
+        device="cpu",
+        local_files_only=True,
+    )
+    validation = data.source_dev if track == "c" else data.dev
+    model.fit(
+        data.train,
+        validation,
+        output_dir=tmp_path / "runs",
+        run_id=track,
+        epochs=1,
+        batch_size=2,
+        gradient_accumulation_steps=2,
+        data_metadata=data.metadata,
+    )
+    assert model.metadata["training"]["monitor"] == metric
+    assert model.model.config.num_labels == (20 if track == "b" else 6)
+    assert model.metadata["data"]["validation_role"] == (
+        "source_dev" if track == "c" else "dev"
+    )
+    assert model.metadata["data"]["validation_rows"] == len(validation)
+    restored = load_reference_model(model.run_dir / "checkpoint", device="cpu")
+    assert isinstance(restored, model_class)
+    pd.testing.assert_frame_equal(model.predict(data.test), restored.predict(data.test))
+    predictions = restored.predict(data.test)
+    assert predictions.columns.tolist() == ["id", *ENGLISH]
+    assert (
+        predictions[list(ENGLISH)]
+        .isin(range(4) if track == "b" else range(2))
+        .all()
+        .all()
+    )
+    report = evaluate_reference_test(restored, data.test)
+    assert metric in report["metrics"]
+    assert report["selection_split"] == ("source_dev" if track == "c" else "dev")
+    assert len(report["confusion_matrices"]["joy"]) == (4 if track == "b" else 2)
+    if track == "c":
+        selected = json.loads((model.run_dir / "validation_report.json").read_text())
+        assert selected["split"] == "source_dev"
+        assert selected["metrics"]["f1_disgust"] is None
+        assert "disgust" not in report["label_names"]
+        assert restored.model_label_names == data.model_label_names
+    pd.testing.assert_frame_equal(data.train, original)
+
+
+def test_c_rejects_target_dev_for_selection(track_datasets, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid C selection must fail before loading a checkpoint")
+
+    monkeypatch.setattr(
+        "emotion_detection.reference_baselines.base.load_sequence_classifier", forbidden
+    )
+    data = track_datasets["c"]
+    with pytest.raises(ValueError, match="source_dev"):
+        TrackCClassifier(label_names=ENGLISH).fit(
+            data.train, data.target_dev, data_metadata=data.metadata
+        )
+
+
+def test_default_suite_trains_fresh_a_b_c_sequentially(
+    track_datasets,
+    checkpoint_factory,
+    tmp_path,
+    monkeypatch,
+):
+    from emotion_detection.cli import main
+    from emotion_detection.experiments import reference as experiment
+    from emotion_detection.reference_baselines import base, track_a
+
+    pretrained = str(checkpoint_factory())
+    events, loaded_models = [], []
+    original = base.load_sequence_classifier
+
+    def load_model(name, *args, **kwargs):
+        loaded_models.append(name)
+        return original(name, *args, **kwargs)
+
+    def load_data(track, *args, **kwargs):
+        events.append(track)
+        return track_datasets[track]
+
+    monkeypatch.setattr(experiment, "load_prepared_reference_dataset", load_data)
+    monkeypatch.setattr(base, "load_sequence_classifier", load_model)
+    monkeypatch.setattr(track_a, "load_sequence_classifier", load_model)
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--project-root",
+                str(tmp_path),
+                "--device",
+                "cpu",
+                "--model-name",
+                pretrained,
+                "--local-files-only",
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--gradient-accumulation-steps",
+                "2",
+                "--max-length",
+                "16",
+                "--run-id",
+                "suite",
+            ]
+        )
+        == 0
+    )
+    assert events == ["a", "b", "c"]
+    assert loaded_models == [pretrained] * 3
+    suite = tmp_path / "output/runs/suite"
+    summary = json.loads((suite / "summary.json").read_text())
+    assert summary["status"] == "completed"
+    assert [summary["tracks"][track]["metric"] for track in "abc"] == [
+        "macro_f1",
+        "pearson",
+        "macro_f1",
+    ]
+    for track in "abc":
+        assert summary["tracks"][track]["status"] == "completed"
+        assert (suite / track / "checkpoint/model.safetensors").is_file()
+        assert (suite / track / "test_report.json").is_file()
+
+
+def test_suite_preflights_all_data_before_any_training(
+    track_datasets, tmp_path, monkeypatch
+):
+    from emotion_detection.cli import main
+    from emotion_detection.experiments import reference as experiment
+
+    calls = []
+
+    def load(track, *args, **kwargs):
+        calls.append(track)
+        if track == "c":
+            raise ValueError("C is not prepared")
+        return track_datasets[track]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("No track may train before the complete suite passes preflight")
+
+    monkeypatch.setattr(experiment, "load_prepared_reference_dataset", load)
+    monkeypatch.setattr(experiment, "_train_one", forbidden)
+    assert (
+        main(["train", "reference", "--project-root", str(tmp_path), "--device", "cpu"])
+        == 2
+    )
+    assert calls == ["a", "b", "c"]
+    assert not (tmp_path / "output").exists()
+
+
+def test_suite_failure_preserves_completed_tracks(
+    track_datasets, tmp_path, monkeypatch
+):
+    from emotion_detection.cli import main
+    from emotion_detection.experiments import reference as experiment
+
+    calls = []
+    monkeypatch.setattr(
+        experiment,
+        "load_prepared_reference_dataset",
+        lambda track, *args, **kw: track_datasets[track],
+    )
+
+    def train(options, data, *, output_dir):
+        calls.append(options.track)
+        if options.track == "b":
+            raise RuntimeError("synthetic B failure")
+        path = output_dir / options.run_id
+        (path / "checkpoint").mkdir(parents=True)
+        (path / "checkpoint/keep.txt").write_text("A completed")
+        (path / "metrics.json").write_text('{"eval_macro_f1": 0.7}')
+        return path
+
+    monkeypatch.setattr(experiment, "_train_one", train)
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--project-root",
+                str(tmp_path),
+                "--device",
+                "cpu",
+                "--run-id",
+                "partial",
+                "--skip-test",
+            ]
+        )
+        == 2
+    )
+    summary = json.loads((tmp_path / "output/runs/partial/summary.json").read_text())
+    assert calls == ["a", "b"]
+    assert summary["status"] == "failed"
+    assert summary["tracks"]["a"]["status"] == "completed"
+    assert summary["tracks"]["b"]["status"] == "failed"
+    assert summary["tracks"]["c"]["status"] == "pending"
+    assert (
+        tmp_path / "output/runs/partial/a/checkpoint/keep.txt"
+    ).read_text() == "A completed"
+
+
+def test_c_rejects_project_checkpoint_with_target_supervision(tmp_path):
+    from emotion_detection.cli import main
+
+    checkpoint = tmp_path / "supervised"
+    checkpoint.mkdir()
+    (checkpoint / "metadata.json").write_text(
+        json.dumps({"track": "a", "data": {"provenance": {"language": "eng"}}})
+    )
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--track",
+                "c",
+                "--model-name",
+                str(checkpoint),
+                "--project-root",
+                str(tmp_path),
+                "--device",
+                "cpu",
+            ]
+        )
+        == 2
+    )
+    assert not (tmp_path / "output").exists()
+
+
+def test_suite_rejects_incompatible_monitor_before_preparation(tmp_path, monkeypatch):
+    from emotion_detection.cli import main
+    from emotion_detection.experiments import reference as experiment
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid suite settings must fail before data acquisition")
+
+    monkeypatch.setattr(experiment, "prepare_reference_dataset", forbidden)
+    assert (
+        main(
+            [
+                "train",
+                "reference",
+                "--monitor",
+                "macro_f1",
+                "--prepare-data",
+                "--device",
+                "cpu",
+                "--project-root",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
+    assert not (tmp_path / "output").exists()

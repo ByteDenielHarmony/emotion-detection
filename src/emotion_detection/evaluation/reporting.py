@@ -9,6 +9,35 @@ def format_classification_report(record, *, heading):
     monitor_label = (
         "Development selection monitor" if record.get("split") == "test" else "Monitor"
     )
+    if "pearson" in metrics:
+        lines = [
+            f"\n{heading}{position}",
+            f"Loss: {metrics['loss']:.4f} | Pearson: {metrics['pearson']:.4f} | MAE: {metrics['mae']:.4f}",
+            f"{monitor_label}: {record['monitor']} ({record['direction']})",
+            f"{'Emotion':<14} {'Pearson':>10} {'MAE':>10} {'Accuracy':>10} {'N':>9}",
+        ]
+        for name in record["label_names"]:
+            lines.append(
+                f"{name:<14} {metrics[f'pearson_{name}']:>10.4f} {metrics[f'mae_{name}']:>10.4f} {metrics[f'accuracy_{name}']:>10.4f} {record['support'][name]:>9}"
+            )
+        lines.append(
+            "Intensity confusion matrices: rows=actual 0/1/2/3, columns=predicted 0/1/2/3"
+        )
+        for name, matrix in record["confusion_matrices"].items():
+            lines.append(
+                f"{name}:\n"
+                + "\n".join(" ".join(f"{value:6}" for value in row) for row in matrix)
+            )
+        if record.get("undefined_correlations"):
+            lines.append(
+                "Undefined Pearson (reported as 0): "
+                + ", ".join(record["undefined_correlations"])
+            )
+        return "\n".join(lines)
+
+    def number(value):
+        return "n/a" if value is None else f"{value:.4f}"
+
     lines = [
         f"\n{heading}{position}",
         (
@@ -20,9 +49,14 @@ def format_classification_report(record, *, heading):
     ]
     for name in record["label_names"]:
         lines.append(
-            f"{name:<14} {metrics[f'precision_{name}']:>10.4f} "
-            f"{metrics[f'recall_{name}']:>10.4f} {metrics[f'f1_{name}']:>10.4f} "
+            f"{name:<14} {number(metrics[f'precision_{name}']):>10} "
+            f"{number(metrics[f'recall_{name}']):>10} {number(metrics[f'f1_{name}']):>10} "
             f"{record['support'][name]:>9}"
+        )
+    if record.get("undefined_emotions"):
+        lines.append(
+            "Unobserved labels (excluded from macro-F1): "
+            + ", ".join(record["undefined_emotions"])
         )
     lines.append(
         "Confusion matrices: rows=actual, columns=predicted (absent / present)"
@@ -41,6 +75,13 @@ def format_classification_report(record, *, heading):
 
 
 def format_development_report(record, *, selected=False):
+    if record.get("split") == "source_dev":
+        heading = (
+            "Selected checkpoint source development metrics"
+            if selected
+            else "Source development metrics"
+        )
+        return format_classification_report(record, heading=heading)
     heading = (
         "Selected checkpoint development metrics" if selected else "Development metrics"
     )

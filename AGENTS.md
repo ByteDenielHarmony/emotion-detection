@@ -13,16 +13,20 @@
   and document checkpoint choices and deviations from the published setup.
   This does not require a single shared checkpoint across languages or exhaustive
   replication of every language/configuration combination or published score.
-- Dataset preparation, a modular Track A transformer reference baseline, and
-  synthetic tests exist. Reference Tracks B and C are not yet implemented.
+- Dataset preparation and transformer reference baselines for A/B/C exist,
+  sharing one lifecycle and binary/intensity task strategies with synthetic tests.
   Inspect current code and distinguish implemented, tested, and trained models;
   a passing tiny-model test is not evidence of a pretrained-model benchmark run.
 - The argparse app supports `emotion` and `python -m emotion_detection`: `doctor`,
   `data languages`, `data prepare`, read-only reference `data check`, and
-  `train reference` (A only).
+  `train reference` (A/B/C sequentially by default; `--track` selects one).
   Do not advertise evaluation/prediction CLI commands until implemented.
 - Track A reference manifests cover 28 languages (84 pinned source files). Use
-  `available_reference_languages()` for discovery, not duplicated CLI lists.
+  `available_reference_languages(track=...)` for discovery, not duplicated CLI
+  lists or an assumed common language set across tracks. C discovery lists target
+  languages, not protocol readiness: validate its source-selection protocol too.
+  The pinned release lacks Romanian B training and a default C source set for
+  Sundanese; never substitute other-track data or skip those failures silently.
   English excludes disgust, Afrikaans excludes surprise, and the other registered
   languages use all six labels. Respect the declared schema, not just label count.
 
@@ -61,6 +65,15 @@
   data/models while constructing the parser. Imports belong in command handlers.
 - CLI training orchestration lives in `experiments/reference.py`; dataset file
   I/O remains in `datasets/`, not in classifiers or argument-parsing code.
+- Training's default `--track all` means A/B/C for one selected language, not all
+  languages. Preflight every requested manifest, protocol, and prepared dataset
+  before loading any model. Never silently skip unsupported track/language pairs.
+- Each track starts fresh from the configured pretrained source; never pass A/B
+  trained weights into C automatically. Reject known project warm starts containing
+  target-language supervision, and document external-checkpoint provenance.
+- Run one model at a time and release model/trainer references plus CUDA caches
+  between tracks. Suites keep separate a/b/c children and a status/metric summary;
+  fail fast while preserving completed results. Do not aggregate F1 and Pearson.
 - `prepare_reference_dataset` acquires and persists data;
   `load_prepared_reference_dataset` only reads, validates provenance/fingerprints,
   and checks schemas and split separation. The historical `load_reference_dataset`
@@ -74,9 +87,17 @@
 - Reference baselines live under `src/emotion_detection/reference_baselines/`.
   Reuse checkpoint/tokenizer utilities and in-memory adapters across tracks,
   while keeping objectives and experiment orchestration track-specific.
+- `base.py` owns the shared lifecycle; `tasks.py` owns validation, target/head
+  encoding, loss, decoding, and diagnostics. Keep the three track wrappers thin
+  and preserve the public Track A API and legacy checkpoint loading.
+- Persist model emotion names, native evaluation emotion names, and head-output
+  slots separately. B has four output slots per emotion; C may have six model
+  emotions but only five native target emotions. Do not equate every model's
+  `config.id2label` with its native evaluation labels. Use `load_reference_model`
+  for track dispatch and retain compatibility with legacy A checkpoints.
 - Model APIs receive already-loaded data. Do not add persistent data loading,
-  downloading, or preprocessing to the model code; another team member owns that
-  integration. Never alter the existing preparation pipeline incidentally.
+  downloading, or preprocessing to the model code. Keep these responsibilities
+  in the dataset package.
 
 ## Data integrity and main-experiment evaluation
 
@@ -97,23 +118,36 @@
 
 ## Reference baselines
 
-- The Track A default is `FacebookAI/xlm-roberta-large`, with a pinned Hub
+- All reference tracks default to `FacebookAI/xlm-roberta-large`, with a pinned Hub
   revision. Checkpoint name and revision are configurable; switching to base or
   another RoBERTa-family checkpoint must not require rewriting the model.
 - Match official-format in-memory frames: id, text, and named emotion columns.
   Preserve prediction IDs and row order. Missing emotion annotations are not
   negative labels; select the correct per-language schema explicitly.
 - Use PyTorch and Transformers. Keep training reproducible and validate on
-  development data only. Default checkpoint selection maximizes macro-F1;
+  development data only. `--monitor auto` resolves to macro-F1 for A/C and mean
+  Pearson for B; explicit incompatible monitors must fail before preparation.
   `--monitor loss` explicitly selects minimum development loss instead. Never
   select checkpoints or stop training using test performance.
+- B uses four logits per emotion and cross-entropy, decoding integer classes
+  0-3 for official-style evaluation. Report Pearson, MAE, and 4x4 confusion
+  matrices. Undefined correlations contribute zero to the fixed-label mean and
+  are explicitly flagged, following BRIGHTER's convention.
+- C fits only source train/source_dev, never target_dev or target training.
+  Respect six model outputs versus target-native evaluation labels, composite
+  `(source_language, id)` identities, and known_<emotion> masks. Unknown annotations
+  contribute nothing to loss, weights, or metrics; any numeric tensor placeholder
+  is masked and must not alter the nullable input DataFrame. Mark entirely
+  unobserved labels undefined instead of inventing negative observations.
 - Early stopping is opt-in via `--early-stopping-patience`; the default fixed
   two-epoch recipe remains available. Checkpoint selection and stopping share
   one monitor. Min-delta controls patience resets, not absolute-best selection.
 - The CLI experiment runner evaluates the held-out test set once by default,
   only after `fit` has selected/restored the best development checkpoint and
   exported it. `--skip-test` disables this phase for development runs. Model
-  `fit` remains train/dev-only; test results never alter selection or thresholds.
+  `fit` receives training and selection frames only (`source_dev` for C); test
+  results never alter selection or thresholds. `--skip-test` applies to every
+  selected track in a suite.
 - Keep final testing separate in `evaluation/reference.py`, receiving data in
   memory. Save non-overwriting `test_metrics.json`, `test_report.json`, and
   `test_predictions.csv` without modifying development reports or checkpoint
@@ -123,19 +157,23 @@
   Tests must use synthetic held-out data. Seeing test results repeatedly does not
   authorize tuning on them; document the holdout limitation clearly.
 - Save self-contained model weights, tokenizer, label mapping, threshold, and
-  metadata under `output/runs/<run-id>/checkpoint/`. Keep metrics and run metadata
-  alongside it. Never overwrite an existing run. Trainer rotation keeps at most
+  metadata in each track run's `checkpoint/`: `output/runs/<run-id>/checkpoint/`
+  for single-track runs, or `output/runs/<suite-id>/<a|b|c>/checkpoint/` for suites.
+  A suite `--run-id` names the group, not an individual child. Keep metrics and
+  run metadata alongside it. Never overwrite an existing run. Trainer rotation keeps at most
   two intermediate checkpoints under that new run's `training/`, protecting best
   and latest and retaining optimizer state. Do not implement broad cleanup across
   runs or delete existing checkpoints outside the current training directory.
-- Print development metrics and one 2x2 confusion matrix per emotion each epoch,
-  reusing predictions from validation. Matrix rows are actual absent/present;
-  columns are predicted absent/present. Keep all reports in `epoch_history.jsonl`
-  regardless of checkpoint rotation, and put the selected report in
+- Print task-appropriate development metrics and confusion matrices each epoch,
+  reusing predictions from validation. Matrix rows are actual classes and columns
+  are predicted classes: absent/present for A/C, or 0,1,2,3 for B. Keep all reports
+  in `epoch_history.jsonl` regardless of checkpoint rotation, and put the selected report in
   `validation_report.json`. The final best-model evaluation is not another epoch.
+  A/C matrices are 2x2; B matrices are 4x4. C reports and metadata must
+  identify selection as source_dev rather than target development.
 - Record the monitor, selected best metric/epoch, actual completed epochs, and
-  stopping reason. Do not report best loss as F1: `best_macro_f1` is the maximum
-  observed epoch F1; selected checkpoint metrics are recorded separately.
+  stopping reason. Do not report loss as F1/Pearson: track-appropriate best metric
+  and selected checkpoint scores are recorded separately.
 - Memory-conscious defaults use 256 tokens, microbatch 2, accumulation 4,
   gradient checkpointing, and automatic CUDA BF16/FP16 where supported. These
   settings are not a guarantee of fitting every 16 GB GPU; verify on real hardware.

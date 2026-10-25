@@ -12,9 +12,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from emotion_detection.evaluation.metrics import multilabel_diagnostics
 from emotion_detection.evaluation.reporting import format_classification_report
-from emotion_detection.reference_baselines.data import validate_frame
+from emotion_detection.reference_baselines.tasks import task_for_track
 from emotion_detection.reference_baselines.transformer import resolve_precision
 
 
@@ -28,6 +27,8 @@ def evaluate_reference_test(classifier, test_data, *, batch_size=2):
     ):
         raise ValueError("Final test evaluation requires an exported best checkpoint")
     saved = json.loads((checkpoint / "metadata.json").read_text(encoding="utf-8"))
+    track = saved.get("track", "a")
+    task = task_for_track(track)
     names = tuple(classifier.label_names)
     if (
         saved["label_names"] != list(names)
@@ -48,7 +49,7 @@ def evaluate_reference_test(classifier, test_data, *, batch_size=2):
         raise FileExistsError(
             "Final test artifacts already exist; refusing to overwrite or rescore"
         )
-    validate_frame(test_data, names)
+    task.validate(test_data, names)
     fingerprint = hashlib.sha256(
         test_data.to_json(orient="split", index=False, force_ascii=False).encode(
             "utf-8"
@@ -61,13 +62,17 @@ def evaluate_reference_test(classifier, test_data, *, batch_size=2):
         )
 
     training = saved["training"]
-    weights = np.asarray(training["positive_class_weights"], dtype=np.float32)
-    if (
-        weights.shape != (len(names),)
-        or not np.isfinite(weights).all()
-        or (weights < 0).any()
-    ):
-        raise ValueError("Invalid training class weights in checkpoint metadata")
+    weights = None
+    if track != "b":
+        all_names = saved.get("model_label_names", list(names))
+        all_weights = np.asarray(training["positive_class_weights"], dtype=np.float32)
+        if (
+            all_weights.shape != (len(all_names),)
+            or not np.isfinite(all_weights).all()
+            or (all_weights < 0).any()
+        ):
+            raise ValueError("Invalid training class weights in checkpoint metadata")
+        weights = torch.tensor(all_weights[[all_names.index(name) for name in names]])
     device = next(classifier.model.parameters()).device.type
     training_precision = training["mixed_precision"]
     precision = (
@@ -82,18 +87,17 @@ def evaluate_reference_test(classifier, test_data, *, batch_size=2):
         logits_frame = classifier.predict_logits(test_data, batch_size=batch_size)
     if logits_frame["id"].tolist() != test_data["id"].tolist():
         raise ValueError("Test predictions do not preserve input IDs/order")
-    logits = torch.tensor(logits_frame[list(names)].to_numpy(), dtype=torch.float32)
+    logits = torch.tensor(
+        logits_frame[list(task.output_names(names))].to_numpy(), dtype=torch.float32
+    )
     if not torch.isfinite(logits).all():
         raise ValueError("Test logits contain non-finite values")
-    probabilities = logits.sigmoid().numpy()
-    predicted = (probabilities >= saved["threshold"]).astype(int)
-    targets = test_data[list(names)].to_numpy(dtype=np.float32, copy=True)
-    report = multilabel_diagnostics(targets, predicted, names)
-    # Same weighted BCE objective as validation, evaluated stably from logits.
+    predicted = task.decode(logits.numpy(), len(names), saved["threshold"])
+    targets = task.targets(test_data, names)
+    report = task.report(targets, predicted, names)
+    # Same task objective as validation, evaluated stably from logits once.
     report["metrics"]["loss"] = float(
-        torch.nn.functional.binary_cross_entropy_with_logits(
-            logits, torch.from_numpy(targets), pos_weight=torch.from_numpy(weights)
-        )
+        task.loss(logits, torch.from_numpy(targets), weights)
     )
     best_checkpoint = training.get("best_checkpoint")
     best_step = (
@@ -111,7 +115,8 @@ def evaluate_reference_test(classifier, test_data, *, batch_size=2):
             "direction": "minimize"
             if training.get("monitor") == "loss"
             else "maximize",
-            "selection_split": "dev",
+            "selection_split": saved.get("data", {}).get("validation_role", "dev"),
+            "track": track,
             "threshold": saved["threshold"],
             "rows": len(test_data),
             "data_fingerprint": fingerprint,

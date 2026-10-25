@@ -136,8 +136,9 @@ package. It may download missing raw files and regenerate prepared files and
 audits, but never overwrites existing raw files. `--non-interactive` disables
 manual-recovery prompts. Reference Track A supports 28 registered languages;
 `data languages` lists them without acquiring or preparing data. Only the selected
-language is prepared or trained, not all languages automatically. B/C are not
-implemented. `--release` selects a registered pinned dataset release. The older
+language is prepared, not all languages automatically. Data preparation supports
+A/B/C according to the registered manifests and C source protocol.
+`--release` selects a registered pinned dataset release. The older
 dataset CLI's `--list-languages` option remains available.
 
 `data check` is strictly read-only: it validates the release, source manifest,
@@ -153,17 +154,44 @@ The separate English joint A+B pipeline is still available unchanged:
 uv run --locked emotion data prepare --dataset joint --non-interactive
 ```
 
-### Train the Track A reference model
+### Train the reference models
 
 ```bash
+# Default: independent A, then B, then C models for English.
+uv run --locked emotion train reference --device cuda
+
+# Train only one track; for C, --language is the target language.
 uv run --locked emotion train reference --track a --language eng --device cuda
+uv run --locked emotion train reference --track b --language eng --device cuda
+uv run --locked emotion train reference --track c --language eng --device cuda
 ```
+
+**The training default is now `--track all`, not Track A alone.** This selects the
+three tracks for one language, not all registered languages. All requested data
+and protocol settings are checked before any model is loaded. Unsupported
+combinations fail upfront: for example, Romanian lacks B training data at this
+release, and Sundanese has no permitted C sources under the default protocol.
+Each track initializes fresh weights from the same configured pretrained source;
+A/B fine-tuning is never automatically reused for C. Known project checkpoints
+containing target-language supervision are rejected as C warm starts; callers
+must also verify the provenance of any externally fine-tuned checkpoint.
+
+Models train sequentially, releasing model/trainer references and cached GPU
+memory between runs. C pools other-language data (eleven source languages for an
+English target), so it is considerably larger than the English A/B tasks. Each
+track retains its own checkpoints, so a full suite also needs more disk space.
+
+`--monitor auto` is the default: A/C maximize macro-F1, B maximizes mean Pearson.
+`--monitor loss` minimizes each track's own loss. Explicit `macro_f1` is valid only
+for A/C, and `pearson` only for B; incompatible suite overrides fail before
+training. `--threshold` applies to A/C only; B predicts integer classes by argmax.
+`--protocol` is passed only to C (including within an all-track run).
 
 Training uses the read-only prepared-data loader. It never prepares datasets
 implicitly. To explicitly run preparation before training instead:
 
 ```bash
-uv run --locked emotion train reference --track a --language eng --device cuda --prepare-data --non-interactive
+uv run --locked emotion train reference --language eng --device cuda --prepare-data --non-interactive
 ```
 
 Use `--model-name FacebookAI/xlm-roberta-base` for a smaller model, or a local
@@ -178,14 +206,14 @@ Runs are saved under `output/runs/<run-id>/`, and existing runs are never
 overwritten. Training, early stopping, and checkpoint selection use development
 data only. **After the selected best checkpoint has been exported, the CLI
 evaluates it once on the held-out test set by default.** It prints test loss,
-macro/micro-F1, per-emotion metrics, and confusion matrices. These results never
+task-appropriate metrics and confusion matrices. These results never
 change the selected checkpoint or threshold.
 
 Pass `--skip-test` for development-only runs. Repeatedly inspecting test scores
 while deciding model settings compromises the holdout; use development results
 for those choices and reserve test results for the final comparison. Test artifacts
 are separate: `test_metrics.json`, `test_report.json`, and `test_predictions.csv`
-(IDs and binary labels in original input order). Existing results are never
+(IDs and binary A/C labels or integer B intensities in original order). Existing results are never
 overwritten. If final testing fails, the trained checkpoint and development
 artifacts remain saved, and the CLI exits with an error identifying the run.
 
@@ -197,8 +225,8 @@ Standalone evaluation/prediction CLI commands are not implemented yet.
 
 ### Longer training with early stopping
 
-The default remains two epochs with no early stopping. Macro-F1 is already the
-default selection metric; no `--monitor` flag is needed. To set a larger epoch
+The default remains two epochs with no early stopping. Task-appropriate selection
+metrics are resolved automatically; no `--monitor` flag is needed. To set a larger epoch
 limit and stop when development macro-F1 stops improving:
 
 ```bash
@@ -208,7 +236,7 @@ uv run --locked emotion train reference --track a --language eng --device cuda \
 ```
 
 This example uses bash line continuations; the same options can be entered on one
-line in other shells. `--monitor macro_f1` (the default) selects higher scores;
+line in other shells. A/C select higher macro-F1; B selects higher Pearson;
 `--monitor loss` selects lower loss. Checkpoint selection and early stopping use
 the same metric. Supplying `--early-stopping-patience` enables stopping after that
 many consecutive evaluation epochs without sufficient improvement.
@@ -223,6 +251,10 @@ Matrices use actual absent/present as rows and predicted absent/present as colum
 inference pass or any test evaluation. A final report is labeled separately as
 the selected checkpoint's development evaluation, followed by the held-out test
 report unless `--skip-test` was supplied.
+For B, reports instead show Pearson/MAE/accuracy and 4x4 intensity confusion
+matrices with class order 0,1,2,3. Undefined Pearson correlations (constant targets
+or predictions, or fewer than two observations) are flagged and contribute zero
+to the fixed-label mean, matching the related BRIGHTER baseline convention.
 
 The trainer saves at every epoch and rotates old checkpoints, retaining at most
 two intermediate checkpoints while protecting the best and latest. An extra
@@ -242,7 +274,33 @@ this need not equal `selected_checkpoint_macro_f1`.
 Longer/early-stopped runs are separate experiments, not exact reproductions of
 the original fixed two-epoch recipe. The previous runs are not modified.
 
-## Track A reference baseline
+## Reference model APIs
+
+`ReferenceTransformer` shares tokenization, training, inference, early stopping,
+checkpointing, and persistence. The small `TrackAClassifier`, `TrackBClassifier`,
+and `TrackCClassifier` wrappers select binary or intensity task strategies.
+The existing Track A API and legacy saved checkpoints remain supported.
+
+| Track | Head and objective | Selection partition | Primary metric |
+| --- | --- | --- | --- |
+| A | Binary emotion logits; weighted BCE | `dev` | Macro-F1 |
+| B | Four logits per emotion; cross-entropy | `dev` | Mean Pearson |
+| C | Binary model logits; masked weighted BCE | **`source_dev`** | Masked macro-F1 |
+
+Track C uses `CrosslingualReferenceDataset.train` and `.source_dev` for fitting.
+`.target_dev` is not used for model selection or automatically scored. Missing
+annotations stay nullable in DataFrames; tensor placeholders carry false masks
+and contribute nothing to loss, class weights, or metrics. Training identities
+use `(source_language, id)`. C checkpoints store separate model emotion names
+(six outputs) and target-native evaluation names; prediction CSVs contain only
+the target's categories. Unobserved labels are marked undefined and excluded from
+masked source-dev macro-F1, rather than being treated as negative annotations.
+
+For B, `predict` returns ordinal classes 0-3 and `predict_proba` returns named
+`<emotion>_<level>` probability columns. `load_reference_model(checkpoint_path)`
+dispatches A/B/C automatically; `TrackAClassifier.load(...)` remains compatible.
+
+### Track A example
 
 The model API accepts **already-loaded pandas DataFrames** using the official
 Track A columns: `id`, `text`, and binary emotion columns. English uses `anger`,
@@ -317,8 +375,23 @@ output/runs/<run-id>/
 ├── metrics.json            Training statistics and selected model's dev evaluation
 ├── test_metrics.json       Held-out test scalar metrics (CLI, unless skipped)
 ├── test_report.json        Test provenance, metrics, support, and confusion matrices
-└── test_predictions.csv    Original test IDs and selected model's binary predictions
+└── test_predictions.csv    Original test IDs and selected model's task predictions
 ```
+
+Single-track commands keep this layout. An all-track run groups three such runs:
+
+```text
+output/runs/<suite-id>/
+├── summary.json
+├── a/  # checkpoint/, training/, metrics, reports, predictions
+├── b/
+└── c/
+```
+
+The suite summary records track-specific metrics and statuses, not an average
+of F1 and Pearson. Failures stop the suite while preserving completed tracks and
+marking pending tracks. `--skip-test` applies to all selected tracks. A suite
+`--run-id` names the group; a single-track `--run-id` names the individual run.
 
 Optional `data_metadata={...}` passed to `fit` records dataset provenance supplied
 by the caller. The final checkpoint is sufficient for inference; resumable
@@ -327,8 +400,9 @@ Trainer checkpoints require more disk space. Existing runs are never overwritten
 This implements the RoBERTa-style reference described in
 [the task overview, §4.3](https://aclanthology.org/2025.semeval-1.327/), not a claim
 to reproduce its exact scores. Checkpoint choice, microbatching, and selection on
-development data are recorded explicitly. Reference Tracks B and C are not yet
-implemented; tokenization and transformer utilities are separated for reuse.
+development data are recorded explicitly. B's four-class formulation and C's
+source selection/masking follow the related upstream setup with documented
+preparation deviations, rather than claiming exact reproduction of every score.
 
 ## Dataset preparation
 

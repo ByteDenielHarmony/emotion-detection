@@ -371,11 +371,12 @@ def test_training_defaults_and_no_implicit_preparation(tmp_path, monkeypatch, ca
     assert options.gradient_accumulation_steps == 4
     assert options.gradient_checkpointing is True
     assert options.prepare_data is False
-    assert options.monitor == "macro_f1"
+    assert options.monitor == "auto"
+    assert options.track == "all"
     assert options.early_stopping_patience is None
     assert options.early_stopping_min_delta == 0
     assert options.skip_test is False
-    assert "Final test metrics:" in capsys.readouterr().out
+    assert "Final test artifacts" in capsys.readouterr().out
 
 
 def test_training_flags_are_forwarded(tmp_path, monkeypatch):
@@ -529,6 +530,8 @@ def test_prepare_data_training_flag_orders_stages(
             [
                 "train",
                 "reference",
+                "--track",
+                "a",
                 "--project-root",
                 str(local_reference),
                 "--device",
@@ -569,7 +572,18 @@ def test_final_test_failure_preserves_saved_training_outputs(
     monkeypatch.setattr(experiment, "TrackAClassifier", Model)
     monkeypatch.setattr(experiment, "evaluate_reference_test", fail)
     assert (
-        main(["train", "reference", "--project-root", str(root), "--device", "cpu"])
+        main(
+            [
+                "train",
+                "reference",
+                "--track",
+                "a",
+                "--project-root",
+                str(root),
+                "--device",
+                "cpu",
+            ]
+        )
         == 2
     )
     error = capsys.readouterr().err
