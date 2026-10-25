@@ -127,7 +127,10 @@ Training also checks the requested device, so running `doctor` first is optional
 
 ```bash
 uv run --locked emotion data languages --track a
+uv run --locked emotion data prepare --dataset reference --track all --language eng --non-interactive
 uv run --locked emotion data prepare --dataset reference --track a --language eng --non-interactive
+uv run --locked emotion data prepare --dataset reference --track b --language eng --non-interactive
+uv run --locked emotion data prepare --dataset reference --track c --language eng --non-interactive
 uv run --locked emotion data check --dataset reference --track a --language eng
 ```
 
@@ -138,6 +141,11 @@ manual-recovery prompts. Reference Track A supports 28 registered languages;
 `data languages` lists them without acquiring or preparing data. Only the selected
 language is prepared, not all languages automatically. Data preparation supports
 A/B/C according to the registered manifests and C source protocol.
+`--track all` prepares A, then B, then C for one language without training; the
+preparation default remains A. All selected manifests and the C source protocol
+are checked before acquisition or writes. `--protocol` applies only to C within
+the batch. Unsupported combinations fail rather than being skipped; a later
+failure preserves completed outputs. Joint A+B remains a separate command below.
 `--release` selects a registered pinned dataset release. The older
 dataset CLI's `--list-languages` option remains available.
 

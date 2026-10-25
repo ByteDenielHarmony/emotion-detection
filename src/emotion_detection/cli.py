@@ -113,7 +113,8 @@ def build_parser():
         "--dataset", choices=("reference", "joint"), default="reference"
     )
     prepare.add_argument(
-        "--track", help="Reference track (a, b or c); not applicable to joint data"
+        "--track",
+        help="Reference track: a (default), b, c, or all (A/B/C sequentially for one language); not applicable to joint data",
     )
     prepare.add_argument(
         "--language", help="Reference language (default eng); joint data is English"
@@ -316,22 +317,34 @@ def _prepare_data(args):
             arguments.append("--non-interactive")
         return prepare_joint(arguments)
 
-    from emotion_detection.datasets import prepare_reference_dataset
+    from emotion_detection.datasets import (
+        iter_prepare_reference_datasets,
+        prepare_reference_dataset,
+    )
     from emotion_detection.datasets.acquisition import AcquisitionError
     from emotion_detection.datasets.sources import DEFAULT_RELEASE
 
     try:
-        data = prepare_reference_dataset(
-            track=args.track or "a",
-            language=args.language or "eng",
-            release=args.release or DEFAULT_RELEASE,
-            project_root=root,
-            interactive=False if args.non_interactive else None,
+        options = {
+            "language": args.language or "eng",
+            "release": args.release or DEFAULT_RELEASE,
+            "project_root": root,
+            "interactive": False if args.non_interactive else None,
             **({"protocol": args.protocol} if args.protocol is not None else {}),
+        }
+        datasets = (
+            iter_prepare_reference_datasets(**options)
+            if args.track == "all"
+            else (prepare_reference_dataset(track=args.track or "a", **options),)
         )
+        for data in datasets:
+            if args.track == "all":
+                print(f"Prepared reference Track {data.metadata['track'].upper()}")
+            _print_dataset(data)
     except AcquisitionError as error:
         raise RuntimeError(str(error)) from error
-    _print_dataset(data)
+    if args.track == "all":
+        print(f"Preparation completed: A, B, C for {options['language']}; no training started")
     return 0
 
 

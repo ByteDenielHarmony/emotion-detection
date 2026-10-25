@@ -1,6 +1,7 @@
 """Data preparation APIs; importing them never loads or trains a model."""
 
 from emotion_detection.datasets.reference import (
+    iter_prepare_reference_datasets,
     load_prepared_reference_dataset,
     load_reference_dataset,
     prepare_reference_dataset,
@@ -15,6 +16,7 @@ __all__ = [
     "CrosslingualReferenceDataset",
     "ReferenceDataset",
     "available_reference_languages",
+    "iter_prepare_reference_datasets",
     "load_prepared_reference_dataset",
     "load_reference_dataset",
     "prepare_reference_dataset",

@@ -182,6 +182,40 @@ def prepare_reference_dataset(
     return dataset
 
 
+def iter_prepare_reference_datasets(
+    language="eng",
+    *,
+    release=DEFAULT_RELEASE,
+    project_root=PROJECT_ROOT,
+    interactive=None,
+    protocol=None,
+):
+    """Yield prepared A, B, C datasets for one language, without training.
+
+    Iteration validates all manifests and the C source protocol before acquisition
+    or writes. Failures stop iteration without removing completed track outputs.
+    Protocol overrides apply only to C; single-track APIs remain unchanged.
+    """
+    from emotion_detection.datasets.sources_track_c import (
+        DEFAULT_C_PROTOCOL,
+        get_crosslingual_sources,
+    )
+
+    for track in ("a", "b"):
+        get_reference_sources(track, language, release)
+    get_crosslingual_sources(language, release, protocol or DEFAULT_C_PROTOCOL)
+
+    for track in ("a", "b", "c"):
+        yield prepare_reference_dataset(
+            track,
+            language,
+            release=release,
+            project_root=project_root,
+            interactive=interactive,
+            **({"protocol": protocol} if track == "c" and protocol is not None else {}),
+        )
+
+
 def load_reference_dataset(
     track="a",
     language="eng",
