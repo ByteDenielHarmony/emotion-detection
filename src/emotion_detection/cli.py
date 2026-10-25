@@ -249,6 +249,31 @@ def build_parser():
         help="Skip final held-out test evaluation after the best checkpoint is saved",
     )
     reference.set_defaults(handler=_train_reference)
+
+    report = commands.add_parser("report", help="Read saved run artifacts")
+    _common_options(report)
+    report_commands = report.add_subparsers(dest="report_command", required=True)
+    reference_report = report_commands.add_parser(
+        "reference", help="Plot figures from a saved reference suite"
+    )
+    _common_options(reference_report)
+    reference_report.add_argument(
+        "--run-dir",
+        type=Path,
+        required=True,
+        help="Existing reference suite directory (reads artifacts only)",
+    )
+    reference_report.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Figure directory (default: reports/figures/<run-id>)",
+    )
+    reference_report.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing figure files",
+    )
+    reference_report.set_defaults(handler=_report_reference)
     return parser
 
 
@@ -424,6 +449,21 @@ def _train_reference(args):
         print(f"Final test metrics: {run / 'test_metrics.json'}")
         print(f"Final test report: {run / 'test_report.json'}")
         print(f"Final test predictions: {run / 'test_predictions.csv'}")
+    return 0
+
+
+def _report_reference(args):
+    from emotion_detection.evaluation.reference_figures import write_reference_figures
+
+    run_dir = args.run_dir
+    if args.output_dir is None:
+        output_dir = args.project_root / "reports" / "figures" / run_dir.name
+    else:
+        output_dir = args.output_dir
+    written = write_reference_figures(run_dir, output_dir, overwrite=args.overwrite)
+    print("Figures written from saved artifacts only (no training or evaluation):")
+    for path in written:
+        print(path)
     return 0
 
 

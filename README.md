@@ -229,7 +229,48 @@ Test inference follows the run's BF16/FP16 setting on CUDA; CPU uses FP32, and t
 actual inference precision is recorded in the test report. The report also records
 the selected epoch, frozen threshold, and test-data fingerprint. Development
 results in `metrics.json` and `validation_report.json` are not overwritten.
-Standalone evaluation/prediction CLI commands are not implemented yet.
+Saved suites can be plotted with the read-only command below. Standalone
+evaluation and prediction commands are not implemented.
+
+### Report a saved reference suite
+
+```bash
+uv run --locked emotion report reference \
+  --run-dir output/runs/<suite-id>
+```
+
+This only reads `summary.json` plus each track's `epoch_history.jsonl`,
+`metadata.json`, `validation_report.json`, and `test_report.json`. It does not
+train, load a model, download files, or score anything again. On Windows
+PowerShell, enter the same options on one line.
+
+The command writes three 300 DPI PNGs to `reports/figures/<suite-id>/`:
+
+- `development_progress.png`: recorded A development macro-F1, B development
+  mean Pearson, and C source-development macro-F1. Points are the saved epoch
+  values, with the selected checkpoint marked and early stopping marked only
+  when the run stopped early. Loss and test curves are not drawn.
+- `test_per_emotion.png`: final test F1 (A/C) or Pearson (B) for each emotion
+  named in that track's test report.
+- `performance_comparison.png`: selected development score, final test score,
+  and, for English only, the organizers' published baseline test scores
+  (A 0.708, B 0.641, C 0.375). Paper development scores are not available.
+  Track C's selected score is source-development macro-F1 and is marked as not
+  comparable to the target-language test score. The figure describes the run as
+  a modified reference implementation, not an exact reproduction.
+
+`--output-dir` chooses a different figure directory. If any of the three files
+already exist, the command stops unless `--overwrite` is passed. An unfinished
+track or a skipped test is an error that names the missing result. Suites in
+other languages are still plotted; their comparison figure leaves the published
+English baselines blank.
+
+```bash
+uv run --locked emotion report reference \
+  --run-dir output/runs/<suite-id> \
+  --output-dir reports/figures/custom \
+  --overwrite
+```
 
 ### Longer training with early stopping
 
@@ -457,6 +498,7 @@ dependencies, and raw dataset files. The lockfile alone does not pin the data.
 | `output/analysis/`, `output/runs/` | Generated analyses and experiment artifacts |
 | `reports/` | LaTeX report sources and references |
 | `reports/results/` | Selected result summaries retained in Git |
+| `reports/figures/` | Generated reference-suite figures (PNG) |
 
 `data/` and `output/` ignore all contents except `.gitkeep` placeholders. Keep
 large datasets and trained models out of tracked directories. The virtual

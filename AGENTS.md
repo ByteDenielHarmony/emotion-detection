@@ -18,9 +18,12 @@
   Inspect current code and distinguish implemented, tested, and trained models;
   a passing tiny-model test is not evidence of a pretrained-model benchmark run.
 - The argparse app supports `emotion` and `python -m emotion_detection`: `doctor`,
-  `data languages`, `data prepare`, read-only reference `data check`, and
-  `train reference` (A/B/C sequentially by default; `--track` selects one).
-  Do not advertise evaluation/prediction CLI commands until implemented.
+  `data languages`, `data prepare`, read-only reference `data check`,
+  `train reference` (A/B/C sequentially by default; `--track` selects one), and
+  read-only `report reference`. `report reference` only reads an existing suite's
+  epoch history, metadata, and saved development/test reports. It must not train,
+  load a model, download, or evaluate. Do not advertise evaluation/prediction
+  CLI commands until implemented.
 - Track A reference manifests cover 28 languages (84 pinned source files). Use
   `available_reference_languages(track=...)` for discovery, not duplicated CLI
   lists or an assumed common language set across tracks. C discovery lists target

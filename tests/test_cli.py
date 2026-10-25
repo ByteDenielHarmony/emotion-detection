@@ -68,7 +68,15 @@ def snapshot(root):
 
 @pytest.mark.parametrize(
     "command",
-    [[], ["data"], ["data", "languages"], ["data", "prepare"], ["train", "reference"]],
+    [
+        [],
+        ["data"],
+        ["data", "languages"],
+        ["data", "prepare"],
+        ["train", "reference"],
+        ["report"],
+        ["report", "reference"],
+    ],
 )
 def test_help_is_lightweight_and_model_free(command, tmp_path):
     script = (
@@ -81,6 +89,7 @@ def test_help_is_lightweight_and_model_free(command, tmp_path):
         "assert 'torch' not in sys.modules\n"
         "assert 'transformers' not in sys.modules\n"
         "assert 'pandas' not in sys.modules\n"
+        "assert 'matplotlib' not in sys.modules\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script, *command, "--help"],
