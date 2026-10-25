@@ -229,9 +229,13 @@ __marimo__/
 !/output/**/
 !/output/**/.gitkeep
 
+# Project-local tool downloads and executables
+/.tools/
+
 # LaTeX build artifacts (keep report sources, references, and figures)
 /reports/build/
 /reports/*.pdf
+/reports/results/bare_jrnl.pdf
 /reports/**/*.aux
 /reports/**/*.bbl
 /reports/**/*.bcf
@@ -244,3 +248,7 @@ __marimo__/
 /reports/**/*.run.xml
 /reports/**/*.synctex.gz
 /reports/**/*.toc
+/reports/**/*.dvi
+/reports/**/*.xdv
+/reports/**/*.fmt
+/reports/**/*.synctex

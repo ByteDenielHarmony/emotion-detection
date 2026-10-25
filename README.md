@@ -468,6 +468,67 @@ CSV audits in `output/analysis/reference_baselines/track_a/<language>/`.
 loading; `summary.csv` remains the flattened human-readable report. Raw inputs
 and the joint pipeline's existing behavior are unchanged.
 
+## Build the LaTeX report
+
+The report starts from Overleaf's [one-column IEEE journal template](https://www.overleaf.com/latex/templates/one-column-ieee-journal-article/ykctxqgxptrs).
+Its entry point is `reports/results/bare_jrnl.tex`; accompanying example
+bibliographies are under `reports/results/bibtex/`. Keep template license notices
+when adapting the sources, and include an AI-usage appendix in the report.
+
+Use [Tectonic **0.17.0**](https://github.com/tectonic-typesetting/tectonic/releases/tag/tectonic%400.17.0),
+installed locally under `.tools/tectonic/`. No systemwide TeX installation or
+Python environment is needed. Download the release matching your OS and CPU;
+Windows users should use `tectonic.exe` in the build command below.
+
+For **Linux x86_64**, the following bash commands require `curl`, `tar`, and
+`sha256sum`. Run from the repository root:
+
+```bash
+mkdir -p .tools/tectonic
+curl --fail --location \
+  'https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/tectonic-0.17.0-x86_64-unknown-linux-musl.tar.gz' \
+  --output .tools/tectonic/tectonic.tar.gz
+sha256sum --check <<'EOF'
+8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7  .tools/tectonic/tectonic.tar.gz
+EOF
+```
+
+Continue only if verification reports `OK`. The musl binary is statically linked;
+it does not require a separate musl installation.
+
+```bash
+tar -xzf .tools/tectonic/tectonic.tar.gz -C .tools/tectonic
+.tools/tectonic/tectonic --version
+```
+
+Compile from the source directory so relative bibliography and figure paths work:
+
+```bash
+cd reports/results
+mkdir -p ../build
+../../.tools/tectonic/tectonic --keep-logs --outdir ../build bare_jrnl.tex
+cd ../..
+```
+
+The PDF and log are `reports/build/bare_jrnl.pdf` and
+`reports/build/bare_jrnl.log`. Tectonic handles compilation passes and BibTeX when
+enabled in the source; the unchanged template uses an inline bibliography.
+The first build downloads TeX support files, including `IEEEtran.cls`, into
+Tectonic's user cache. Later builds can use `--only-cached` to forbid downloads,
+provided all required files are already cached.
+
+**Current limitations:** the unchanged template compiles, but Tectonic substitutes
+Latin Modern for IEEEtran's Times fonts and emits fontconfig warnings on the
+tested Arch setup. The font setup still needs resolving for faithful template
+typography. The executable is version-pinned, but the default TeX bundle is not;
+a fully pinned toolchain also needs a compatible bundle and checksum, supplied
+via `--bundle PATH`. Do not assume byte-identical PDFs or equivalence to
+Overleaf's pdfLaTeX output.
+
+Keep sources, bibliography files, and source figures in Git. `.tools/`,
+`reports/build/`, and LaTeX auxiliary outputs are ignored; do not commit downloaded
+executables, caches, or generated report PDFs.
+
 ## Update dependencies
 
 `pyproject.toml` declares dependencies; `uv.lock` records their resolved versions.
@@ -499,6 +560,8 @@ dependencies, and raw dataset files. The lockfile alone does not pin the data.
 | `reports/` | LaTeX report sources and references |
 | `reports/results/` | Selected result summaries retained in Git |
 | `reports/figures/` | Generated reference-suite figures (PNG) |
+| `reports/build/` | Ignored compiled report PDFs and build logs |
+| `.tools/` | Ignored project-local tools, including Tectonic |
 
 `data/` and `output/` ignore all contents except `.gitkeep` placeholders. Keep
 large datasets and trained models out of tracked directories. The virtual
